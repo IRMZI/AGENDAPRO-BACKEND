@@ -74,7 +74,7 @@ export const getTenantBySlug = async (slug: string) => {
 export const getTenantByDomain = async (domain: string) => {
   // Remove www. e normaliza o domínio
   const normalizedDomain = domain.toLowerCase().replace(/^www\./, "");
-  
+
   // Busca tenant que contenha o domínio (com ou sem www)
   const tenant = await prisma.tenant.findFirst({
     where: {
@@ -85,7 +85,7 @@ export const getTenantByDomain = async (domain: string) => {
       ],
     },
   });
-  
+
   return tenant;
 };
 
@@ -176,7 +176,7 @@ export const seedDefaultTenants = async () => {
       // Atualiza os domínios se já existir
       const updated = await prisma.tenant.update({
         where: { slug: tenantData.slug },
-        data: { 
+        data: {
           domains: tenantData.domains,
           updated_at: new Date(),
         },
@@ -187,5 +187,3 @@ export const seedDefaultTenants = async () => {
 
   return results;
 };
-
-web: npm run start
