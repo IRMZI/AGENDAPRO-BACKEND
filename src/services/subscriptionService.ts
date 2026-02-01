@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { SessionStatus } from "@prisma/client";
 
 export const getClientSubscriptions = async (clientId: string) => {
   return prisma.clientSubscription.findMany({
@@ -51,7 +52,7 @@ export const createClientSubscription = async (data: any) => {
         subscription_id: subscription.id,
         company_id: subscription.company_id,
         session_number: index + 1,
-        status: "scheduled",
+        status: SessionStatus.scheduled,
       }),
     );
 

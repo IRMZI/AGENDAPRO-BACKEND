@@ -25,11 +25,11 @@ export const getTenantBySlugHandler = async (req: Request, res: Response) => {
   try {
     const { slug } = req.params;
     const tenant = await getTenantBySlug(slug);
-    
+
     if (!tenant) {
       return res.status(404).json({ error: "Tenant não encontrado" });
     }
-    
+
     return res.status(200).json({ data: tenant });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -41,11 +41,13 @@ export const getTenantByDomainHandler = async (req: Request, res: Response) => {
   try {
     const { domain } = req.params;
     const tenant = await getTenantByDomain(domain);
-    
+
     if (!tenant) {
-      return res.status(404).json({ error: "Tenant não encontrado para este domínio" });
+      return res
+        .status(404)
+        .json({ error: "Tenant não encontrado para este domínio" });
     }
-    
+
     return res.status(200).json({ data: tenant });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -57,11 +59,11 @@ export const getTenantByIdHandler = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const tenant = await getTenantById(id);
-    
+
     if (!tenant) {
       return res.status(404).json({ error: "Tenant não encontrado" });
     }
-    
+
     return res.status(200).json({ data: tenant });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });

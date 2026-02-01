@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { SessionStatus } from "@prisma/client";
 
 const updateSubscriptionFromSessions = async (subscriptionId: string) => {
   const subscription = await prisma.clientSubscription.findUnique({
@@ -112,7 +113,7 @@ export const getSessionsWithBookings = async (companyId: string) => {
 
 export const updateSessionStatus = async (
   sessionId: string,
-  status: string,
+  status: SessionStatus,
 ) => {
   const updated = await prisma.subscriptionSession.update({
     where: { id: sessionId },

@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { SessionStatus } from "@prisma/client";
 import {
   archiveSession,
   createSubscriptionSession,
@@ -97,7 +98,16 @@ export const updateSessionStatusHandler = async (
   try {
     const { sessionId } = req.params;
     const { status } = req.body || {};
-    const result = await updateSessionStatus(sessionId, status);
+
+    // Valida se o status é um valor válido do enum
+    if (!Object.values(SessionStatus).includes(status)) {
+      return res.status(400).json({ error: "Status inválido" });
+    }
+
+    const result = await updateSessionStatus(
+      sessionId,
+      status as SessionStatus,
+    );
     return res.status(200).json({ data: result });
   } catch (error: any) {
     return res.status(400).json({ error: error.message });
