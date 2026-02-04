@@ -210,8 +210,22 @@ model Booking {
   client          Client?             @relation(fields: [client_id], references: [id], onDelete: SetNull)
   subscription    ClientSubscription? @relation(fields: [subscription_id], references: [id], onDelete: SetNull)
   sessions        SubscriptionSession[]
+  bookingServices BookingService[]
 
   @@map("app_fd14ee28a1_bookings")
+}
+
+model BookingService {
+  id          String   @id @default(uuid()) @db.Uuid
+  booking_id  String   @db.Uuid
+  service_id  String   @db.Uuid
+  created_at  DateTime @default(now())
+
+  booking     Booking  @relation(fields: [booking_id], references: [id], onDelete: Cascade)
+  service     Service  @relation(fields: [service_id], references: [id], onDelete: Cascade)
+
+  @@unique([booking_id, service_id])
+  @@map("app_fd14ee28a1_booking_services")
 }
 
 model Service {
@@ -228,6 +242,7 @@ model Service {
   company          Company       @relation(fields: [company_id], references: [id], onDelete: Cascade)
   bookings         Booking[]
   plans            Plan[]
+  bookingServices BookingService[]
 
   @@map("app_fd14ee28a1_services")
 }

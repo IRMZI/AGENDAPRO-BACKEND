@@ -60,17 +60,21 @@ export const getAvailableTimeSlotsHandler = async (
 ) => {
   try {
     const { companyId } = req.params;
-    const { attendantId, date, serviceId } = req.query as {
+    const { attendantId, date, serviceId, totalDuration } = req.query as {
       attendantId: string;
       date: string;
       serviceId: string;
+      totalDuration?: string;
     };
+
+    const totalDurationMinutes = totalDuration ? parseInt(totalDuration, 10) : undefined;
 
     const result = await getAvailableTimeSlots(
       companyId,
       attendantId,
       date,
       serviceId,
+      totalDurationMinutes,
     );
     return res.status(200).json({ data: result });
   } catch (error: any) {

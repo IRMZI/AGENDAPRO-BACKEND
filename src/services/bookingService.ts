@@ -13,8 +13,11 @@ export const createBooking = async (booking: any) => {
     throw new Error("Company account is inactive. Please contact support.");
   }
 
-  const bookingData = {
-    ...booking,
+  // Extrair service_ids se existir (novo formato com múltiplos serviços)
+  const { service_ids, ...bookingData } = booking;
+
+  const finalBookingData = {
+    ...bookingData,
     booking_date: booking.booking_date
       ? new Date(booking.booking_date)
       : new Date(),
@@ -24,8 +27,35 @@ export const createBooking = async (booking: any) => {
       : null,
   };
 
-  const created = await prisma.booking.create({
-    data: bookingData,
+  // Usar transação para criar booking e relacionamentos de serviços
+  const created = await prisma.$transaction(async (tx) => {
+    // Criar o booking
+    const newBooking = await tx.booking.create({
+      data: finalBookingData,
+    });
+
+    // Se service_ids foi fornecido (novo formato), criar relacionamentos na tabela BookingService
+    if (service_ids && Array.isArray(service_ids) && service_ids.length > 0) {
+      const bookingServices = service_ids.map((serviceId: string) => ({
+        booking_id: newBooking.id,
+        service_id: serviceId,
+      }));
+
+      await tx.bookingService.createMany({
+        data: bookingServices,
+      });
+    }
+    // Se service_id foi fornecido (formato antigo), manter compatibilidade
+    else if (booking.service_id) {
+      await tx.bookingService.create({
+        data: {
+          booking_id: newBooking.id,
+          service_id: booking.service_id,
+        },
+      });
+    }
+
+    return newBooking;
   });
 
   try {
@@ -41,6 +71,18 @@ export const createBooking = async (booking: any) => {
         attendantName = attendant?.name || null;
       }
 
+      // Buscar os serviços associados para o email
+      const bookingServices = await prisma.bookingService.findMany({
+        where: { booking_id: created.id },
+        include: {
+          service: { select: { name: true } },
+        },
+      });
+
+      const serviceNames = bookingServices
+        .map((bs: any) => bs.service.name)
+        .join(", ");
+
       await sendEmail({
         to: created.client_email,
         subject: `Agendamento Confirmado - ${companyInfo?.name}`,
@@ -49,7 +91,7 @@ export const createBooking = async (booking: any) => {
           client_name: created.client_name,
           company_name: companyInfo?.name,
           company_phone: companyInfo?.phone,
-          service: created.service,
+          service: serviceNames || created.service, // Usar nomes dos serviços ou fallback para campo service
           booking_date: created.booking_date,
           booking_time: created.booking_time,
           attendant_name: attendantName,
@@ -71,6 +113,18 @@ export const getBookingsByCompanyId = async (companyId: string) => {
       attendant: { select: { id: true, name: true, username: true } },
       service_rel: {
         select: { id: true, name: true, duration_minutes: true, price: true },
+      },
+      bookingServices: {
+        include: {
+          service: {
+            select: {
+              id: true,
+              name: true,
+              duration_minutes: true,
+              price: true,
+            },
+          },
+        },
       },
     },
     orderBy: { booking_date: "desc" },
@@ -97,6 +151,18 @@ export const getBookingsByDateRange = async (
       service_rel: {
         select: { id: true, name: true, duration_minutes: true, price: true },
       },
+      bookingServices: {
+        include: {
+          service: {
+            select: {
+              id: true,
+              name: true,
+              duration_minutes: true,
+              price: true,
+            },
+          },
+        },
+      },
     },
     orderBy: [{ booking_date: "asc" }, { booking_time: "asc" }],
   });
@@ -107,13 +173,15 @@ export const getAvailableTimeSlots = async (
   attendantId: string,
   date: string,
   serviceId: string,
+  totalDurationMinutes?: number, // Novo parâmetro opcional para duração total
 ) => {
   const service = await prisma.service.findUnique({
     where: { id: serviceId },
     select: { duration_minutes: true },
   });
 
-  const durationMinutes = service?.duration_minutes || 30;
+  // Usar totalDurationMinutes se fornecido, senão usar duração do serviço
+  const durationMinutes = totalDurationMinutes || service?.duration_minutes || 30;
   const targetDate = new Date(date);
   const weekday = targetDate.getDay();
 
