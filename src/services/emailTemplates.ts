@@ -25,10 +25,76 @@ export const buildEmailContent = (
         html: generateStatusUpdateHTML(data),
         text: generateStatusUpdateText(data),
       };
+    case "attendant_invite":
+      return {
+        html: generateAttendantInviteHTML(data),
+        text: generateAttendantInviteText(data),
+      };
     default:
       throw new Error("Unknown email type");
   }
 };
+
+function generateAttendantInviteHTML(data: EmailData) {
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Acesso à sua agenda</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #F3A6B8, #E38CA4); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+            .content { background: #f8fafc; padding: 30px; border-radius: 0 0 8px 8px; }
+            .button { background: linear-gradient(135deg, #F3A6B8, #E38CA4); color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; display: inline-block; margin: 24px 0; font-weight: bold; }
+            .muted { color: #64748b; font-size: 14px; }
+            .footer { text-align: center; margin-top: 30px; color: #64748b; font-size: 13px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>👋 Bem-vindo(a)!</h1>
+                <p>Crie sua senha para acessar a agenda</p>
+            </div>
+            <div class="content">
+                <p>Olá <strong>${data.attendant_name}</strong>,</p>
+                <p><strong>${data.company_name}</strong> liberou seu acesso para você acompanhar a sua própria agenda e seus atendimentos.</p>
+                <p>Clique no botão abaixo para criar sua senha e entrar:</p>
+                <p style="text-align:center;">
+                    <a class="button" href="${data.invite_url}">Criar minha senha</a>
+                </p>
+                <p class="muted">Ou copie e cole este link no navegador:<br>${data.invite_url}</p>
+                <p class="muted">Este link expira em 72 horas. Se você não esperava este convite, pode ignorar este email.</p>
+            </div>
+            <div class="footer">
+                <p>Este é um email automático do sistema AgendaPro.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+  `;
+}
+
+function generateAttendantInviteText(data: EmailData) {
+  return `
+BEM-VINDO(A)!
+
+Olá ${data.attendant_name},
+
+${data.company_name} liberou seu acesso para acompanhar a sua própria agenda e seus atendimentos.
+
+Crie sua senha e entre por este link (expira em 72 horas):
+${data.invite_url}
+
+Se você não esperava este convite, pode ignorar este email.
+
+---
+Este é um email automático do sistema AgendaPro.
+  `;
+}
 
 function generateBookingConfirmationHTML(data: EmailData) {
   return `

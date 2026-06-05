@@ -2,9 +2,11 @@ import type { Request, Response } from "express";
 import {
   archiveBooking,
   createBooking,
+  deleteBooking,
   getAvailableTimeSlots,
   getBookingsByCompanyId,
   getBookingsByDateRange,
+  updateBooking,
   updateBookingStatus,
 } from "../services/bookingService.js";
 
@@ -88,8 +90,11 @@ export const updateBookingStatusHandler = async (
 ) => {
   try {
     const { bookingId } = req.params;
-    const { status, notes } = req.body || {};
-    const result = await updateBookingStatus(bookingId, status, notes);
+    const { status, notes, total_amount, payment_method } = req.body || {};
+    const result = await updateBookingStatus(bookingId, status, notes, {
+      total_amount: total_amount ?? null,
+      payment_method: payment_method ?? null,
+    });
     return res.status(200).json({ data: result });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -103,5 +108,25 @@ export const archiveBookingHandler = async (req: Request, res: Response) => {
     return res.status(200).json({ data: result });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
+  }
+};
+
+export const updateBookingHandler = async (req: Request, res: Response) => {
+  try {
+    const { bookingId } = req.params;
+    const result = await updateBooking(bookingId, req.body || {});
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+export const deleteBookingHandler = async (req: Request, res: Response) => {
+  try {
+    const { bookingId } = req.params;
+    const result = await deleteBooking(bookingId);
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
   }
 };

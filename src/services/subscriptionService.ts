@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { SessionStatus } from "@prisma/client";
+import { recordSubscriptionIncome } from "./financialService.js";
 
 export const getClientSubscriptions = async (clientId: string) => {
   return prisma.clientSubscription.findMany({
@@ -68,10 +69,20 @@ export const updateClientSubscription = async (
   subscriptionId: string,
   updates: any,
 ) => {
-  return prisma.clientSubscription.update({
+  const updated = await prisma.clientSubscription.update({
     where: { id: subscriptionId },
     data: updates,
   });
+  // When a subscription is marked paid, record it as income (idempotent).
+  if (updates?.payment_status === "paid") {
+    try {
+      await recordSubscriptionIncome(subscriptionId);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("Failed to record subscription income:", err);
+    }
+  }
+  return updated;
 };
 
 export const processBookingCompletionWithSubscription = async (

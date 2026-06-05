@@ -1,5 +1,35 @@
 import { Request, Response, NextFunction } from 'express';
 
+// Fields that must never reach the logs in cleartext.
+const SENSITIVE_KEYS = new Set([
+  'password',
+  'currentpassword',
+  'newpassword',
+  'password_hash',
+  'refreshtoken',
+  'accesstoken',
+  'token',
+  'authorization',
+  'x-internal-secret',
+  'x-webhook-secret',
+  'x-api-key',
+]);
+
+// Return a shallow copy of an object with sensitive values masked.
+const redact = (value: any): any => {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(redact);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    out[k] = SENSITIVE_KEYS.has(k.toLowerCase())
+      ? '[REDACTED]'
+      : v && typeof v === 'object'
+        ? redact(v)
+        : v;
+  }
+  return out;
+};
+
 // Middleware para log detalhado de requisições
 export const requestLogger = (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
@@ -37,8 +67,8 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
       console.error(`[REQ_${requestId}] 💥 ERRO 500 DETECTADO:`, {
         method: req.method,
         path: req.path,
-        body: req.body,
-        query: req.query,
+        body: redact(req.body),
+        query: redact(req.query),
         headers: {
           'content-type': req.get('Content-Type'),
           'user-agent': req.get('User-Agent')?.substring(0, 100),
@@ -70,8 +100,8 @@ export const errorHandler = (error: any, req: Request, res: Response, next: Next
     request: {
       method: req.method,
       path: req.path,
-      body: req.body,
-      query: req.query,
+      body: redact(req.body),
+      query: redact(req.query),
       ip: req.ip
     }
   });

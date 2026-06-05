@@ -1,16 +1,24 @@
 import type { Request, Response } from "express";
+import type { AuthenticatedRequest } from "../middleware/auth.js";
 import {
   createCompany,
-  getCompanyById,
+  getPublicCompanyById,
   getCompanyByUserId,
+  getCompanyPermissions,
   isCompanyActive,
   updateCompany,
+  updateCompanyPermissions,
   updateCompanyServices,
 } from "../services/companyService.js";
 
-export const createCompanyHandler = async (req: Request, res: Response) => {
+export const createCompanyHandler = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
   try {
-    const result = await createCompany(req.body);
+    // Always bind the new company to the authenticated user — never trust a
+    // client-supplied user_id (would let a caller create a company for someone else).
+    const result = await createCompany({ ...req.body, user_id: req.user!.id });
     return res.status(201).json({ data: result });
   } catch (error: any) {
     return res.status(400).json({ error: error.message });
@@ -33,7 +41,7 @@ export const getCompanyByUserIdHandler = async (
 export const getCompanyByIdHandler = async (req: Request, res: Response) => {
   try {
     const { companyId } = req.params;
-    const result = await getCompanyById(companyId);
+    const result = await getPublicCompanyById(companyId);
     return res.status(200).json({ data: result });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -66,6 +74,32 @@ export const updateCompanyHandler = async (req: Request, res: Response) => {
     return res.status(200).json({ data: result });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
+  }
+};
+
+export const getCompanyPermissionsHandler = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { companyId } = req.params;
+    const result = await getCompanyPermissions(companyId);
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+export const updateCompanyPermissionsHandler = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { companyId } = req.params;
+    const result = await updateCompanyPermissions(companyId, req.body || {});
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
   }
 };
 

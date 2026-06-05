@@ -1,0 +1,1 @@
+﻿-- baseline placeholder - migration applied directly to DB before being committed

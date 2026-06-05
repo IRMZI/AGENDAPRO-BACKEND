@@ -1,17 +1,95 @@
 import { prisma } from "../lib/prisma.js";
 import { sendEmail } from "./emailService.js";
 import { getCompanyById } from "./companyService.js";
-import { BookingStatus } from "@prisma/client";
+import { recordBookingFinancials } from "./financialService.js";
+import { BookingStatus, type PaymentMethod } from "@prisma/client";
+
+/**
+ * Guard against cross-tenant reference injection on the public booking route:
+ * every related id must resolve to a row owned by the same company. Throws on
+ * the first mismatch (and on a non-existent id).
+ */
+async function assertBelongsToCompany(
+  companyId: string,
+  refs: {
+    attendantId?: string | null;
+    clientId?: string | null;
+    subscriptionId?: string | null;
+    serviceId?: string | null;
+    serviceIds?: string[] | null;
+  },
+) {
+  if (refs.attendantId) {
+    const row = await prisma.attendant.findUnique({
+      where: { id: refs.attendantId },
+      select: { company_id: true },
+    });
+    if (!row || row.company_id !== companyId) {
+      throw new Error("Invalid attendant for this company");
+    }
+  }
+  if (refs.clientId) {
+    const row = await prisma.client.findUnique({
+      where: { id: refs.clientId },
+      select: { company_id: true },
+    });
+    if (!row || row.company_id !== companyId) {
+      throw new Error("Invalid client for this company");
+    }
+  }
+  if (refs.subscriptionId) {
+    const row = await prisma.clientSubscription.findUnique({
+      where: { id: refs.subscriptionId },
+      select: { company_id: true },
+    });
+    if (!row || row.company_id !== companyId) {
+      throw new Error("Invalid subscription for this company");
+    }
+  }
+  const serviceIds = [
+    ...(refs.serviceId ? [refs.serviceId] : []),
+    ...(Array.isArray(refs.serviceIds) ? refs.serviceIds : []),
+  ];
+  if (serviceIds.length > 0) {
+    const count = await prisma.service.count({
+      where: { id: { in: serviceIds }, company_id: companyId },
+    });
+    if (count !== new Set(serviceIds).size) {
+      throw new Error("Invalid service for this company");
+    }
+  }
+}
 
 export const createBooking = async (booking: any) => {
+  if (!booking?.company_id) {
+    throw new Error("company_id is required");
+  }
+
   const company = await prisma.company.findUnique({
     where: { id: booking.company_id },
-    select: { is_active: true },
+    select: { id: true, is_active: true },
   });
 
-  if (company && !company.is_active) {
+  // Public endpoint: reject unknown companies (no spamming arbitrary ids) and
+  // inactive accounts.
+  if (!company) {
+    throw new Error("Company not found");
+  }
+  if (!company.is_active) {
     throw new Error("Company account is inactive. Please contact support.");
   }
+
+  const companyId: string = booking.company_id;
+
+  // Reject any cross-tenant reference: every related id supplied by the
+  // (unauthenticated) caller must belong to the same company.
+  await assertBelongsToCompany(companyId, {
+    attendantId: booking.attendant_id,
+    clientId: booking.client_id,
+    subscriptionId: booking.subscription_id,
+    serviceId: booking.service_id,
+    serviceIds: booking.service_ids,
+  });
 
   // Extrair service_ids se existir (novo formato com múltiplos serviços)
   const { service_ids, ...bookingData } = booking;
@@ -36,9 +114,16 @@ export const createBooking = async (booking: any) => {
 
     // Se service_ids foi fornecido (novo formato), criar relacionamentos na tabela BookingService
     if (service_ids && Array.isArray(service_ids) && service_ids.length > 0) {
+      // Congela o preço de cada serviço no momento do agendamento.
+      const services = await tx.service.findMany({
+        where: { id: { in: service_ids } },
+        select: { id: true, price: true },
+      });
+      const priceMap = new Map(services.map((s) => [s.id, s.price]));
       const bookingServices = service_ids.map((serviceId: string) => ({
         booking_id: newBooking.id,
         service_id: serviceId,
+        price_snapshot: priceMap.get(serviceId) ?? null,
       }));
 
       await tx.bookingService.createMany({
@@ -47,10 +132,15 @@ export const createBooking = async (booking: any) => {
     }
     // Se service_id foi fornecido (formato antigo), manter compatibilidade
     else if (booking.service_id) {
+      const svc = await tx.service.findUnique({
+        where: { id: booking.service_id },
+        select: { price: true },
+      });
       await tx.bookingService.create({
         data: {
           booking_id: newBooking.id,
           service_id: booking.service_id,
+          price_snapshot: svc?.price ?? null,
         },
       });
     }
@@ -270,14 +360,48 @@ export const updateBookingStatus = async (
   bookingId: string,
   status: BookingStatus,
   notes?: string,
+  opts?: { total_amount?: number | null; payment_method?: PaymentMethod | null },
 ) => {
-  const updated = await prisma.booking.update({
-    where: { id: bookingId },
-    data: {
-      status,
-      notes: notes || undefined,
-      updated_at: new Date(),
-    },
+  const updated = await prisma.$transaction(async (tx) => {
+    if (status === BookingStatus.completed) {
+      // Optimistic guard: only the first transition to completed records
+      // financials, killing duplicate income/commission on double-clicks.
+      const transition = await tx.booking.updateMany({
+        where: { id: bookingId, status: { not: BookingStatus.completed } },
+        data: {
+          status,
+          notes: notes || undefined,
+          updated_at: new Date(),
+          completed_at: new Date(),
+          ...(opts?.total_amount != null
+            ? { total_amount: opts.total_amount }
+            : {}),
+          ...(opts?.payment_method ? { payment_method: opts.payment_method } : {}),
+        },
+      });
+
+      const booking = await tx.booking.findUnique({ where: { id: bookingId } });
+      if (!booking) throw new Error("Booking not found");
+
+      if (transition.count === 1) {
+        await recordBookingFinancials(tx, {
+          id: booking.id,
+          company_id: booking.company_id,
+          attendant_id: booking.attendant_id,
+          total_amount: booking.total_amount,
+          payment_method: booking.payment_method,
+          booking_date: booking.booking_date,
+          client_name: booking.client_name,
+          service: booking.service,
+        });
+      }
+      return booking;
+    }
+
+    return tx.booking.update({
+      where: { id: bookingId },
+      data: { status, notes: notes || undefined, updated_at: new Date() },
+    });
   });
 
   try {
@@ -329,6 +453,63 @@ export const archiveBooking = async (bookingId: string) => {
     where: { id: bookingId },
     data: { archived: true, updated_at: new Date() },
   });
+};
+
+/** Edit an existing booking (client/service/attendant/date/time/notes). */
+export const updateBooking = async (bookingId: string, data: any) => {
+  return prisma.$transaction(async (tx) => {
+    const patch: Record<string, unknown> = { updated_at: new Date() };
+    if (data.attendant_id !== undefined)
+      patch.attendant_id = data.attendant_id || null;
+    if (data.notes !== undefined) patch.notes = data.notes;
+    if (data.client_name !== undefined) patch.client_name = data.client_name;
+    if (data.client_phone !== undefined) patch.client_phone = data.client_phone;
+    if (data.client_email !== undefined) patch.client_email = data.client_email;
+    if (data.client_id !== undefined) patch.client_id = data.client_id || null;
+    if (data.service !== undefined) patch.service = data.service;
+    if (data.booking_time !== undefined) patch.booking_time = data.booking_time;
+    if (data.booking_date !== undefined)
+      patch.booking_date = new Date(data.booking_date);
+    if (data.service_id !== undefined)
+      patch.service_id = data.service_id || null;
+
+    await tx.booking.update({ where: { id: bookingId }, data: patch });
+
+    const current = await tx.booking.findUnique({ where: { id: bookingId } });
+    if (current?.booking_date && current.booking_time) {
+      const ds = current.booking_date.toISOString().slice(0, 10);
+      await tx.booking.update({
+        where: { id: bookingId },
+        data: { date_time: new Date(`${ds}T${current.booking_time}:00`) },
+      });
+    }
+
+    // If the service changed, rebuild the join row with a fresh price snapshot.
+    if (data.service_id !== undefined) {
+      await tx.bookingService.deleteMany({ where: { booking_id: bookingId } });
+      if (data.service_id) {
+        const svc = await tx.service.findUnique({
+          where: { id: data.service_id },
+          select: { price: true },
+        });
+        await tx.bookingService.create({
+          data: {
+            booking_id: bookingId,
+            service_id: data.service_id,
+            price_snapshot: svc?.price ?? null,
+          },
+        });
+      }
+    }
+
+    return tx.booking.findUnique({ where: { id: bookingId } });
+  });
+};
+
+/** Hard-delete a booking. BookingService rows cascade; ledger entries are kept. */
+export const deleteBooking = async (bookingId: string) => {
+  await prisma.booking.delete({ where: { id: bookingId } });
+  return { id: bookingId };
 };
 
 const hasTimeConflict = (

@@ -4,6 +4,7 @@ import {
   logoutSession,
   refreshSession,
   registerUser,
+  setAttendantPassword,
 } from "../services/authService.js";
 import type { AuthenticatedRequest } from "../middleware/auth.js";
 
@@ -76,6 +77,24 @@ export const logoutHandler = async (req: Request, res: Response) => {
     return res.status(204).send();
   } catch (error: any) {
     return res.status(500).json({ error: "Failed to logout" });
+  }
+};
+
+export const setPasswordHandler = async (req: Request, res: Response) => {
+  try {
+    const { token, password } = req.body || {};
+    if (!token || !password) {
+      return res.status(400).json({ error: "Missing token or password" });
+    }
+    const result = await setAttendantPassword(
+      token,
+      password,
+      req.headers["user-agent"],
+      req.ip,
+    );
+    return res.status(200).json(result);
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
   }
 };
 

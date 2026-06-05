@@ -129,14 +129,10 @@ export const searchClientsPublic = async (
     }
 
     const queryDuration = Date.now() - queryStart;
+    // Don't log client PII (names/phones). Counts/timing only.
     console.log('[CLIENT_SEARCH_SERVICE] ✅ Query executada com sucesso:', {
       resultCount: results.length,
       duration: `${queryDuration}ms`,
-      sampleResult: results.length > 0 ? {
-        id: results[0].id,
-        name: results[0].name,
-        phone: results[0].phone?.substring(0, 8) + '***' // mascarar parte do telefone por segurança
-      } : null
     });
 
     return results;

@@ -8,15 +8,27 @@ const refreshExpiresIn = (process.env.JWT_REFRESH_EXPIRES_IN ||
   "30d") as jwt.SignOptions["expiresIn"];
 
 if (!accessSecret || !refreshSecret) {
+  const message =
+    "JWT secrets are not set. Configure JWT_ACCESS_SECRET and JWT_REFRESH_SECRET.";
+  // Fail closed in production: empty secrets mean forgeable / unverifiable
+  // tokens, so refuse to boot rather than run insecurely.
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(message);
+  }
   // eslint-disable-next-line no-console
-  console.warn(
-    "JWT secrets are not set. Configure JWT_ACCESS_SECRET and JWT_REFRESH_SECRET.",
-  );
+  console.warn(message);
 }
+
+export type UserRole = "admin" | "attendant";
 
 export type AccessTokenPayload = {
   sub: string;
   email: string;
+  // Identity context — optional so legacy tokens (issued before this change)
+  // still verify. requireAuth defaults role to "admin" when absent.
+  role?: UserRole;
+  company_id?: string | null;
+  attendant_id?: string | null;
 };
 
 export type RefreshTokenPayload = {

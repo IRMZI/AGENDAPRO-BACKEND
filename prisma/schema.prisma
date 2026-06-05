@@ -7,50 +7,683 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ============================================================================
-// TENANT (White-Label Products)
-// ============================================================================
-
 model Tenant {
-  id                    String        @id @default(uuid()) @db.Uuid
-  slug                  String        @unique  // Ex: "alignpro", "mbc"
-  name                  String        // Ex: "AlignPro", "My Beauty Calendar"
-  short_name            String?       // Ex: "AlignPro", "MBC"
-  tagline               String?       // Slogan do produto
-  description           String?       // Descrição do produto
-  is_active             Boolean       @default(true)
-  
-  // Domínios associados (ex: ["dashboard-alignpro.com.br", "alignpro.com"])
-  domains               String[]      @default([])
-  
-  // Cores do tema (valores HSL: "hue saturation% lightness%")
-  theme_primary         String        // Cor primária principal
-  theme_secondary       String?       // Cor secundária
-  theme_accent          String?       // Cor de destaque
-  theme_background      String?       // Cor de fundo
-  theme_foreground      String?       // Cor do texto principal
-  theme_card            String?       // Cor dos cards
-  theme_border          String?       // Cor das bordas
-  theme_muted           String?       // Cor de elementos secundários
-  theme_sidebar         String?       // Cor da sidebar
-  
-  // Contato/Suporte
-  support_email         String?
-  support_phone         String?
-  website_url           String?
-  
-  // Metadados
-  logo_url              String?
-  favicon_url           String?
-  
-  created_at            DateTime      @default(now())
-  updated_at            DateTime      @default(now())
-  
-  // Relacionamentos
-  companies             Company[]
-  preonboardings        PreOnboarding[]
+  id               String          @id @default(uuid()) @db.Uuid
+  slug             String          @unique
+  name             String
+  short_name       String?
+  tagline          String?
+  description      String?
+  is_active        Boolean         @default(true)
+  theme_primary    String
+  theme_secondary  String?
+  theme_accent     String?
+  theme_background String?
+  theme_foreground String?
+  theme_card       String?
+  theme_border     String?
+  theme_muted      String?
+  theme_sidebar    String?
+  support_email    String?
+  support_phone    String?
+  website_url      String?
+  logo_url         String?
+  favicon_url      String?
+  created_at       DateTime        @default(now())
+  updated_at       DateTime        @default(now())
+  domains          String[]        @default([])
+  companies        Company[]
+  preonboardings   PreOnboarding[]
 
   @@map("app_fd14ee28a1_tenants")
+}
+
+model Company {
+  id                               String                             @id @default(uuid()) @db.Uuid
+  user_id                          String                             @unique @db.Uuid
+  name                             String
+  email                            String
+  phone                            String
+  business_type                    String?
+  is_active                        Boolean                            @default(true)
+  services                         String[]                           @default([])
+  background_image_url             String?
+  banner_image_url                 String?
+  company_token                    String?                            @unique
+  company_nickname                 String?
+  company_size                     CompanySize?
+  business_model                   String?
+  max_attendants                   Int?                               @default(1)
+  features                         Json?
+  primary_phone                    String?
+  first_login_completed            Boolean                            @default(false)
+  created_at                       DateTime                           @default(now())
+  updated_at                       DateTime                           @default(now())
+  theme_accent                     String?
+  theme_background                 String?
+  theme_border                     String?
+  theme_card                       String?
+  theme_foreground                 String?
+  theme_muted                      String?
+  theme_primary                    String?
+  theme_secondary                  String?
+  theme_sidebar                    String?
+  tenant_id                        String?                            @db.Uuid
+  attendants                       Attendant[]
+  bookings                         Booking[]
+  client_subscriptions             ClientSubscription[]
+  clients                          Client[]
+  tenant                           Tenant?                            @relation(fields: [tenant_id], references: [id])
+  user                             User                               @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  business_hours                   CompanyBusinessHours[]
+  plan_overrides                   PlanOverride?
+  permissions                      CompanyPermission?
+  plans                            Plan[]
+  services_rel                     Service[]
+  subscription_sessions            SubscriptionSession[]
+  user_profiles                    UserProfile[]
+  whatsapp_sessions     WhatsappSession[]
+
+  @@map("app_fd14ee28a1_companies")
+}
+
+model CompanyPermission {
+  id                String   @id @default(uuid()) @db.Uuid
+  company_id        String   @unique @db.Uuid
+  use_google_agenda Boolean  @default(false)
+  use_financeiro    Boolean  @default(true)
+  use_conversation  Boolean  @default(true)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @default(now())
+  company           Company  @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+  @@map("app_fd14ee28a1_company_permissions")
+}
+
+model Attendant {
+  id                 String                @id @default(uuid()) @db.Uuid
+  company_id         String                @db.Uuid
+  name               String
+  email              String?
+  phone              String?
+  is_active          Boolean               @default(true)
+  created_at         DateTime              @default(now())
+  updated_at         DateTime              @default(now())
+  username           String
+  user_id            String?               @db.Uuid
+  // Optional login (Phase 1): owner can invite an attendant to log in.
+  login_enabled      Boolean               @default(false)
+  invite_token       String?               @unique
+  invite_expires_at  DateTime?
+  // Optional commission (Phase 1): opt-in fixed % of the gross service price.
+  commission_enabled Boolean               @default(false)
+  commission_percent Decimal?              @db.Decimal(5, 2)
+  banners            AttendantBanner?
+  links              AttendantLink?
+  weekdays           AttendantWeekday[]
+  company            Company               @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  user               User?                 @relation(fields: [user_id], references: [id])
+  bookings           Booking[]
+  sessions           SubscriptionSession[]
+
+  @@unique([company_id, username])
+  @@unique([user_id])
+  @@map("app_fd14ee28a1_attendants")
+}
+
+model Booking {
+  id              String                @id @default(uuid()) @db.Uuid
+  company_id      String                @db.Uuid
+  attendant_id    String?               @db.Uuid
+  client_name     String
+  client_phone    String
+  client_email    String
+  service         String
+  booking_date    DateTime              @db.Date
+  booking_time    String
+  date_time       DateTime?
+  status          BookingStatus         @default(pending)
+  notes           String?
+  created_at      DateTime              @default(now())
+  updated_at      DateTime              @default(now())
+  service_id      String?               @db.Uuid
+  client_id       String?               @db.Uuid
+  subscription_id String?               @db.Uuid
+  archived        Boolean               @default(false)
+  // Financial (Phase 2): revenue snapshot captured at completion
+  total_amount    Decimal?              @db.Decimal(10, 2)
+  payment_method  PaymentMethod?
+  completed_at    DateTime?
+  bookingServices BookingService[]
+  attendant       Attendant?            @relation(fields: [attendant_id], references: [id])
+  client          Client?               @relation(fields: [client_id], references: [id])
+  company         Company               @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  service_rel     Service?              @relation(fields: [service_id], references: [id])
+  subscription    ClientSubscription?   @relation(fields: [subscription_id], references: [id])
+  sessions        SubscriptionSession[]
+
+  @@map("app_fd14ee28a1_bookings")
+}
+
+model BookingService {
+  id            String   @id @default(uuid()) @db.Uuid
+  booking_id    String   @db.Uuid
+  service_id    String   @db.Uuid
+  // Price frozen at booking time so later price edits don't rewrite history.
+  price_snapshot Decimal? @db.Decimal(10, 2)
+  created_at    DateTime @default(now())
+  booking       Booking  @relation(fields: [booking_id], references: [id], onDelete: Cascade)
+  service       Service  @relation(fields: [service_id], references: [id], onDelete: Cascade)
+
+  @@unique([booking_id, service_id])
+  @@map("app_fd14ee28a1_booking_services")
+}
+
+model Service {
+  id               String           @id @default(uuid()) @db.Uuid
+  company_id       String           @db.Uuid
+  name             String
+  description      String?
+  duration_minutes Int              @default(30)
+  price            Decimal?         @db.Decimal(10, 2)
+  is_active        Boolean          @default(true)
+  created_at       DateTime         @default(now())
+  updated_at       DateTime         @default(now())
+  bookingServices  BookingService[]
+  bookings         Booking[]
+  plans            Plan[]
+  company          Company          @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+  @@map("app_fd14ee28a1_services")
+}
+
+model CompanyBusinessHours {
+  id         String   @id @default(uuid()) @db.Uuid
+  company_id String   @db.Uuid
+  weekday    Int
+  is_open    Boolean  @default(true)
+  open_time  String?
+  close_time String?
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+  company    Company  @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+  @@unique([company_id, weekday])
+  @@map("app_fd14ee28a1_company_business_hours")
+}
+
+model AttendantWeekday {
+  id           String    @id @default(uuid()) @db.Uuid
+  attendant_id String    @db.Uuid
+  weekday      Int
+  is_active    Boolean   @default(true)
+  start_time   String?
+  end_time     String?
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @default(now())
+  attendant    Attendant @relation(fields: [attendant_id], references: [id], onDelete: Cascade)
+
+  @@unique([attendant_id, weekday])
+  @@map("app_fd14ee28a1_attendant_weekdays")
+}
+
+model AttendantLink {
+  id            String    @id @default(uuid()) @db.Uuid
+  attendant_id  String    @unique @db.Uuid
+  title         String
+  url           String
+  icon          String?
+  is_active     Boolean   @default(true)
+  display_order Int       @default(0)
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @default(now())
+  attendant     Attendant @relation(fields: [attendant_id], references: [id], onDelete: Cascade)
+
+  @@map("app_fd14ee28a1_attendant_links")
+}
+
+model AttendantBanner {
+  id           String    @id @default(uuid()) @db.Uuid
+  attendant_id String    @unique @db.Uuid
+  image_url    String
+  title        String?
+  subtitle     String?
+  is_active    Boolean   @default(true)
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @default(now())
+  attendant    Attendant @relation(fields: [attendant_id], references: [id], onDelete: Cascade)
+
+  @@map("app_fd14ee28a1_attendant_banners")
+}
+
+model UserProfile {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  company_id String?  @db.Uuid
+  role       UserRole @default(customer)
+  full_name  String?
+  avatar_url String?
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+  company    Company? @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, company_id])
+  @@map("app_fd14ee28a1_user_profiles")
+}
+
+model Client {
+  id            String               @id @default(uuid()) @db.Uuid
+  company_id    String               @db.Uuid
+  name          String
+  phone         String
+  email         String?
+  notes         String?
+  created_at    DateTime             @default(now())
+  updated_at    DateTime             @default(now())
+  bookings      Booking[]
+  subscriptions ClientSubscription[]
+  company       Company              @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+  @@unique([company_id, phone])
+  @@map("app_fd14ee28a1_clients")
+}
+
+model Plan {
+  id                  String               @id @default(uuid()) @db.Uuid
+  company_id          String               @db.Uuid
+  service_id          String?              @db.Uuid
+  name                String
+  description         String?
+  plan_type           PlanType
+  total_sessions      Int?
+  recurrence_type     RecurrenceType?
+  recurrence_interval Int?                 @default(1)
+  price               Decimal              @db.Decimal(10, 2)
+  is_active           Boolean              @default(true)
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @default(now())
+  subscriptions       ClientSubscription[]
+  company             Company              @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  service             Service?             @relation(fields: [service_id], references: [id])
+
+  @@map("app_fd14ee28a1_plans")
+}
+
+model ClientSubscription {
+  id                  String                @id @default(uuid()) @db.Uuid
+  client_id           String                @db.Uuid
+  plan_id             String                @db.Uuid
+  company_id          String                @db.Uuid
+  sessions_remaining  Int?
+  sessions_used       Int                   @default(0)
+  next_booking_date   DateTime?             @db.Date
+  last_booking_date   DateTime?             @db.Date
+  status              SubscriptionStatus    @default(active)
+  start_date          DateTime              @db.Date
+  end_date            DateTime?             @db.Date
+  amount_paid         Decimal?              @db.Decimal(10, 2)
+  payment_status      PaymentStatus         @default(pending)
+  notes               String?
+  expired_at          DateTime?
+  cancelled_at        DateTime?
+  cancellation_reason String?
+  created_at          DateTime              @default(now())
+  updated_at          DateTime              @default(now())
+  bookings            Booking[]
+  client              Client                @relation(fields: [client_id], references: [id], onDelete: Cascade)
+  company             Company               @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  plan                Plan                  @relation(fields: [plan_id], references: [id])
+  sessions            SubscriptionSession[]
+
+  @@map("app_fd14ee28a1_client_subscriptions")
+}
+
+model SubscriptionSession {
+  id              String             @id @default(uuid()) @db.Uuid
+  subscription_id String             @db.Uuid
+  booking_id      String?            @db.Uuid
+  company_id      String             @db.Uuid
+  session_number  Int
+  status          SessionStatus      @default(scheduled)
+  scheduled_date  DateTime?          @db.Date
+  completed_at    DateTime?
+  notes           String?
+  created_at      DateTime           @default(now())
+  updated_at      DateTime           @default(now())
+  scheduled_time  String?
+  archived        Boolean            @default(false)
+  attendant_id    String?            @db.Uuid
+  attendant       Attendant?         @relation(fields: [attendant_id], references: [id])
+  booking         Booking?           @relation(fields: [booking_id], references: [id])
+  company         Company            @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  subscription    ClientSubscription @relation(fields: [subscription_id], references: [id], onDelete: Cascade)
+
+  @@unique([subscription_id, session_number])
+  @@map("app_fd14ee28a1_subscription_sessions")
+}
+
+model PreOnboarding {
+  id                    String              @id @default(uuid()) @db.Uuid
+  company_token         String              @unique
+  company_nickname      String
+  company_size          CompanySize
+  business_model        String
+  max_attendants        Int                 @default(1)
+  primary_phone         String
+  features              Json?
+  is_used               Boolean             @default(false)
+  used_at               DateTime?
+  used_by_user_id       String?             @db.Uuid
+  notes                 String?
+  created_at            DateTime            @default(now())
+  updated_at            DateTime            @default(now())
+  features_de_interesse String?
+  status                PreOnboardingStatus @default(pending)
+  completed_at          DateTime?
+  tenant_id             String?             @db.Uuid
+  tenant                Tenant?             @relation(fields: [tenant_id], references: [id])
+  used_by_user          User?               @relation(fields: [used_by_user_id], references: [id])
+
+  @@map("app_fd14ee28a1_preonboarding")
+}
+
+model PlanOverride {
+  id             String   @id @default(uuid()) @db.Uuid
+  company_id     String   @unique @db.Uuid
+  max_attendants Int?
+  max_services   Int?
+  max_links      Int?
+  max_banners    Int?
+  notes          String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @default(now())
+  company        Company  @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+  @@map("app_fd14ee28a1_plan_overrides")
+}
+
+model User {
+  id             String          @id @default(uuid()) @db.Uuid
+  email          String          @unique
+  password_hash  String
+  created_at     DateTime        @default(now())
+  updated_at     DateTime        @default(now())
+  attendants     Attendant[]
+  sessions       Session[]
+  companies      Company?
+  preonboardings PreOnboarding[]
+  profiles       UserProfile[]
+
+  @@map("app_fd14ee28a1_users")
+}
+
+model Session {
+  id                 String    @id @default(uuid()) @db.Uuid
+  user_id            String    @db.Uuid
+  refresh_token_hash String
+  user_agent         String?
+  ip_address         String?
+  expires_at         DateTime
+  revoked_at         DateTime?
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @default(now())
+  user               User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("app_fd14ee28a1_auth_sessions")
+}
+
+model Lead {
+  id                   String   @id @default(uuid()) @db.Uuid
+  name                 String
+  email                String
+  phone                String
+  business_type        String
+  custom_business_type String?
+  attendants_count     Int?
+  source_message       String?
+  created_at           DateTime @default(now())
+  updated_at           DateTime @default(now())
+
+  @@map("app_fd14ee28a1_leads")
+}
+
+model WhatsappContact {
+  id              String                @id @db.Uuid
+  company_id      String                @db.Uuid
+  session_id      String                @db.Uuid
+  wa_id           String
+  name            String?
+  push_name       String?
+  phone           String?
+  profile_pic_url String?
+  is_business     Boolean               @default(false)
+  created_at      DateTime              @default(now())
+  updated_at      DateTime              @default(now())
+  session         WhatsappSession       @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  conversations   WhatsappConversation[]
+
+  @@unique([session_id, wa_id])
+  @@map("app_fd14ee28a1_wa_contacts")
+}
+
+model WhatsappConversation {
+  id              String              @id @db.Uuid
+  company_id      String              @db.Uuid
+  session_id      String              @db.Uuid
+  type            ConversationType    @default(individual)
+  contact_id      String?             @db.Uuid
+  group_id        String?             @db.Uuid
+  wa_chat_id      String
+  last_message_at DateTime?
+  last_message    String?
+  unread_count    Int                 @default(0)
+  is_archived     Boolean             @default(false)
+  created_at      DateTime            @default(now())
+  updated_at      DateTime            @default(now())
+  contact         WhatsappContact?    @relation(fields: [contact_id], references: [id])
+  group           WhatsappGroup?      @relation(fields: [group_id], references: [id])
+  session         WhatsappSession     @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  messages        WhatsappMessage[]
+
+  @@unique([session_id, wa_chat_id])
+  @@map("app_fd14ee28a1_wa_conversations")
+}
+
+model WhatsappGroup {
+  id              String                 @id @db.Uuid
+  company_id      String                 @db.Uuid
+  session_id      String                 @db.Uuid
+  wa_id           String
+  name            String?
+  description     String?
+  profile_pic_url String?
+  participants    Json?
+  created_at      DateTime               @default(now())
+  updated_at      DateTime               @default(now())
+  conversations   WhatsappConversation[]
+  session         WhatsappSession        @relation(fields: [session_id], references: [id], onDelete: Cascade)
+
+  @@unique([session_id, wa_id])
+  @@map("app_fd14ee28a1_wa_groups")
+}
+
+model WhatsappMessage {
+  id              String               @id @db.Uuid
+  company_id      String               @db.Uuid
+  session_id      String               @db.Uuid
+  conversation_id String               @db.Uuid
+  wa_message_id   String
+  direction       MessageDirection
+  status          MessageStatus        @default(pending)
+  from_number     String?
+  to_number       String?
+  body            String?
+  media_type      String?
+  media_url       String?
+  media_mime_type String?
+  timestamp       DateTime
+  raw_data        Json?
+  created_at      DateTime             @default(now())
+  updated_at      DateTime             @default(now())
+  conversation    WhatsappConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+  session         WhatsappSession      @relation(fields: [session_id], references: [id], onDelete: Cascade)
+
+  @@unique([session_id, wa_message_id])
+  @@index([conversation_id, timestamp])
+  @@map("app_fd14ee28a1_wa_messages")
+}
+
+model WhatsappSession {
+  id              String                 @id @default(uuid()) @db.Uuid
+  company_id      String                 @db.Uuid
+  name            String
+  waha_session_id String
+  status          WhatsappSessionStatus  @default(created)
+  phone_number    String?
+  qr_code         String?
+  engine          String                 @default("GOWS")
+  is_active       Boolean                @default(true)
+  last_seen_at    DateTime?
+  created_at      DateTime               @default(now())
+  updated_at      DateTime               @default(now())
+  contacts        WhatsappContact[]
+  conversations   WhatsappConversation[]
+  groups          WhatsappGroup[]
+  messages        WhatsappMessage[]
+  company         Company                @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+  @@unique([company_id, waha_session_id])
+  @@map("app_fd14ee28a1_whatsapp_sessions")
+}
+
+// ============================================================================
+// FINANCIAL MODULE (Phases 2-4)
+// Standalone models with scalar FK columns (no Prisma relations) to keep the
+// migration additive and avoid touching existing models' relation lists.
+// ============================================================================
+
+model FinancialTransaction {
+  id               String            @id @default(uuid()) @db.Uuid
+  company_id       String            @db.Uuid
+  type             TransactionType
+  source           TransactionSource @default(manual)
+  category         String?
+  description      String?
+  amount           Decimal           @db.Decimal(10, 2)
+  payment_method   PaymentMethod?
+  occurred_at      DateTime          @db.Date
+  booking_id       String?           @unique @db.Uuid
+  subscription_id  String?           @db.Uuid
+  attendant_id     String?           @db.Uuid
+  cash_register_id String?           @db.Uuid
+  created_by       String?           @db.Uuid
+  created_at       DateTime          @default(now())
+  updated_at       DateTime          @default(now())
+
+  @@index([company_id, occurred_at])
+  @@index([company_id, type])
+  @@map("app_fd14ee28a1_financial_transactions")
+}
+
+model Commission {
+  id           String           @id @default(uuid()) @db.Uuid
+  company_id   String           @db.Uuid
+  attendant_id String           @db.Uuid
+  booking_id   String?          @unique @db.Uuid
+  base_amount  Decimal          @db.Decimal(10, 2)
+  percent      Decimal          @db.Decimal(5, 2)
+  amount       Decimal          @db.Decimal(10, 2)
+  status       CommissionStatus @default(pending)
+  payout_id    String?          @db.Uuid
+  created_at   DateTime         @default(now())
+  updated_at   DateTime         @default(now())
+
+  @@index([company_id, attendant_id, status])
+  @@map("app_fd14ee28a1_commissions")
+}
+
+model CommissionPayout {
+  id           String       @id @default(uuid()) @db.Uuid
+  company_id   String       @db.Uuid
+  attendant_id String       @db.Uuid
+  period_start DateTime     @db.Date
+  period_end   DateTime     @db.Date
+  total_amount Decimal      @db.Decimal(10, 2)
+  status       PayoutStatus @default(open)
+  paid_at      DateTime?
+  notes        String?
+  created_at   DateTime     @default(now())
+  updated_at   DateTime     @default(now())
+
+  @@index([company_id, attendant_id])
+  @@map("app_fd14ee28a1_commission_payouts")
+}
+
+model CashRegister {
+  id            String             @id @default(uuid()) @db.Uuid
+  company_id    String             @db.Uuid
+  opened_by     String?            @db.Uuid
+  opening_float Decimal            @default(0) @db.Decimal(10, 2)
+  closing_total Decimal?           @db.Decimal(10, 2)
+  expected_total Decimal?          @db.Decimal(10, 2)
+  status        CashRegisterStatus @default(open)
+  opened_at     DateTime           @default(now())
+  closed_at     DateTime?
+  notes         String?
+  created_at    DateTime           @default(now())
+  updated_at    DateTime           @default(now())
+
+  @@index([company_id, status])
+  @@map("app_fd14ee28a1_cash_registers")
+}
+
+model PaymentMethodConfig {
+  id          String        @id @default(uuid()) @db.Uuid
+  company_id  String        @db.Uuid
+  method      PaymentMethod
+  is_enabled  Boolean       @default(true)
+  fee_percent Decimal?      @db.Decimal(5, 2)
+  created_at  DateTime      @default(now())
+  updated_at  DateTime      @default(now())
+
+  @@unique([company_id, method])
+  @@map("app_fd14ee28a1_payment_method_configs")
+}
+
+enum PaymentMethod {
+  cash
+  pix
+  credit
+  debit
+  other
+}
+
+enum TransactionType {
+  income
+  expense
+}
+
+enum TransactionSource {
+  booking
+  subscription
+  manual
+}
+
+enum CommissionStatus {
+  pending
+  paid
+  cancelled
+}
+
+enum PayoutStatus {
+  open
+  paid
+}
+
+enum CashRegisterStatus {
+  open
+  closed
 }
 
 enum BookingStatus {
@@ -110,404 +743,28 @@ enum PreOnboardingStatus {
   completed
 }
 
-model Company {
-  id                    String        @id @default(uuid()) @db.Uuid
-  user_id               String        @unique @db.Uuid
-  tenant_id             String?       @db.Uuid  // Relacionamento com Tenant (white-label)
-  name                  String
-  email                 String
-  phone                 String
-  business_type         String?
-  is_active             Boolean       @default(true)
-  services              String[]      @default([])
-  background_image_url  String?
-  banner_image_url      String?
-  company_token         String?       @unique
-  company_nickname      String?
-  company_size          CompanySize?
-  business_model        String?
-  max_attendants        Int?          @default(1)
-  features              Json?
-  primary_phone         String?
-  first_login_completed Boolean       @default(false)
-  created_at            DateTime      @default(now())
-  updated_at            DateTime      @default(now())
-  
-  // Cores personalizadas da empresa (valores HSL: "hue saturation% lightness%")
-  theme_primary         String?       // Cor primária (ex: "346 73% 80%" - rosa padrão)
-  theme_secondary       String?       // Cor secundária (ex: "346 43% 73%")
-  theme_accent          String?       // Cor de destaque
-  theme_background      String?       // Cor de fundo
-  theme_foreground      String?       // Cor do texto principal
-  theme_card            String?       // Cor dos cards
-  theme_border          String?       // Cor das bordas
-  theme_muted           String?       // Cor de elementos secundários
-  theme_sidebar         String?       // Cor da sidebar
-
-  tenant                Tenant?       @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
-  user                  User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  attendants            Attendant[]
-  bookings              Booking[]
-  services_rel          Service[]
-  clients               Client[]
-  plans                 Plan[]
-  client_subscriptions  ClientSubscription[]
-  business_hours        CompanyBusinessHours[]
-  user_profiles         UserProfile[]
-  plan_overrides        PlanOverride?
-  subscription_sessions SubscriptionSession[]
-
-  @@map("app_fd14ee28a1_companies")
+enum ConversationType {
+  individual
+  group
 }
 
-model Attendant {
-  id          String        @id @default(uuid()) @db.Uuid
-  company_id  String        @db.Uuid
-  name        String
-  email       String?
-  phone       String?
-  is_active   Boolean       @default(true)
-  created_at  DateTime      @default(now())
-  updated_at  DateTime      @default(now())
-  username    String
-  user_id     String?       @db.Uuid
-
-  company     Company       @relation(fields: [company_id], references: [id], onDelete: Cascade)
-  user        User?         @relation(fields: [user_id], references: [id], onDelete: SetNull)
-  bookings    Booking[]
-  weekdays    AttendantWeekday[]
-  links       AttendantLink[]
-  banners     AttendantBanner[]
-  sessions    SubscriptionSession[]
-
-  @@unique([company_id, username])
-  @@map("app_fd14ee28a1_attendants")
+enum MessageDirection {
+  inbound
+  outbound
 }
 
-model Booking {
-  id              String              @id @default(uuid()) @db.Uuid
-  company_id      String              @db.Uuid
-  attendant_id    String?             @db.Uuid
-  client_name     String
-  client_phone    String
-  client_email    String
-  service         String
-  booking_date    DateTime            @db.Date
-  booking_time    String
-  date_time       DateTime?
-  status          BookingStatus       @default(pending)
-  notes           String?
-  created_at      DateTime            @default(now())
-  updated_at      DateTime            @default(now())
-  service_id      String?             @db.Uuid
-  client_id       String?             @db.Uuid
-  subscription_id String?             @db.Uuid
-  archived        Boolean             @default(false)
-
-  company         Company             @relation(fields: [company_id], references: [id], onDelete: Cascade)
-  attendant       Attendant?          @relation(fields: [attendant_id], references: [id], onDelete: SetNull)
-  service_rel     Service?            @relation(fields: [service_id], references: [id], onDelete: SetNull)
-  client          Client?             @relation(fields: [client_id], references: [id], onDelete: SetNull)
-  subscription    ClientSubscription? @relation(fields: [subscription_id], references: [id], onDelete: SetNull)
-  sessions        SubscriptionSession[]
-  bookingServices BookingService[]
-
-  @@map("app_fd14ee28a1_bookings")
+enum MessageStatus {
+  pending
+  sent
+  delivered
+  read
+  failed
 }
 
-model BookingService {
-  id          String   @id @default(uuid()) @db.Uuid
-  booking_id  String   @db.Uuid
-  service_id  String   @db.Uuid
-  created_at  DateTime @default(now())
-
-  booking     Booking  @relation(fields: [booking_id], references: [id], onDelete: Cascade)
-  service     Service  @relation(fields: [service_id], references: [id], onDelete: Cascade)
-
-  @@unique([booking_id, service_id])
-  @@map("app_fd14ee28a1_booking_services")
-}
-
-model Service {
-  id               String        @id @default(uuid()) @db.Uuid
-  company_id       String        @db.Uuid
-  name             String
-  description      String?
-  duration_minutes Int           @default(30)
-  price            Decimal?      @db.Decimal(10, 2)
-  is_active        Boolean       @default(true)
-  created_at       DateTime      @default(now())
-  updated_at       DateTime      @default(now())
-
-  company          Company       @relation(fields: [company_id], references: [id], onDelete: Cascade)
-  bookings         Booking[]
-  plans            Plan[]
-  bookingServices BookingService[]
-
-  @@map("app_fd14ee28a1_services")
-}
-
-model CompanyBusinessHours {
-  id         String   @id @default(uuid()) @db.Uuid
-  company_id String   @db.Uuid
-  weekday    Int
-  is_open    Boolean  @default(true)
-  open_time  String?
-  close_time String?
-  created_at DateTime @default(now())
-  updated_at DateTime @default(now())
-
-  company    Company  @relation(fields: [company_id], references: [id], onDelete: Cascade)
-
-  @@unique([company_id, weekday])
-  @@map("app_fd14ee28a1_company_business_hours")
-}
-
-model AttendantWeekday {
-  id           String   @id @default(uuid()) @db.Uuid
-  attendant_id String   @db.Uuid
-  weekday      Int
-  is_active    Boolean  @default(true)
-  start_time   String?
-  end_time     String?
-  created_at   DateTime @default(now())
-  updated_at   DateTime @default(now())
-
-  attendant    Attendant @relation(fields: [attendant_id], references: [id], onDelete: Cascade)
-
-  @@unique([attendant_id, weekday])
-  @@map("app_fd14ee28a1_attendant_weekdays")
-}
-
-model AttendantLink {
-  id            String   @id @default(uuid()) @db.Uuid
-  attendant_id  String   @db.Uuid
-  title         String
-  url           String
-  icon          String?
-  is_active     Boolean  @default(true)
-  display_order Int      @default(0)
-  created_at    DateTime @default(now())
-  updated_at    DateTime @default(now())
-
-  attendant     Attendant @relation(fields: [attendant_id], references: [id], onDelete: Cascade)
-
-  @@unique([attendant_id])
-  @@map("app_fd14ee28a1_attendant_links")
-}
-
-model AttendantBanner {
-  id           String   @id @default(uuid()) @db.Uuid
-  attendant_id String   @db.Uuid
-  image_url    String
-  title        String?
-  subtitle     String?
-  is_active    Boolean  @default(true)
-  created_at   DateTime @default(now())
-  updated_at   DateTime @default(now())
-
-  attendant    Attendant @relation(fields: [attendant_id], references: [id], onDelete: Cascade)
-
-  @@unique([attendant_id])
-  @@map("app_fd14ee28a1_attendant_banners")
-}
-
-model UserProfile {
-  id         String   @id @default(uuid()) @db.Uuid
-  user_id    String   @db.Uuid
-  company_id String?  @db.Uuid
-  role       UserRole @default(customer)
-  full_name  String?
-  avatar_url String?
-  created_at DateTime @default(now())
-  updated_at DateTime @default(now())
-
-  company    Company? @relation(fields: [company_id], references: [id], onDelete: Cascade)
-  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@unique([user_id, company_id])
-  @@map("app_fd14ee28a1_user_profiles")
-}
-
-model Client {
-  id         String   @id @default(uuid()) @db.Uuid
-  company_id String   @db.Uuid
-  name       String
-  phone      String
-  email      String?
-  notes      String?
-  created_at DateTime @default(now())
-  updated_at DateTime @default(now())
-
-  company    Company  @relation(fields: [company_id], references: [id], onDelete: Cascade)
-  bookings   Booking[]
-  subscriptions ClientSubscription[]
-
-  @@unique([company_id, phone])
-  @@map("app_fd14ee28a1_clients")
-}
-
-model Plan {
-  id                  String         @id @default(uuid()) @db.Uuid
-  company_id          String         @db.Uuid
-  service_id          String?        @db.Uuid
-  name                String
-  description         String?
-  plan_type           PlanType
-  total_sessions      Int?
-  recurrence_type     RecurrenceType?
-  recurrence_interval Int?           @default(1)
-  price               Decimal        @db.Decimal(10, 2)
-  is_active           Boolean        @default(true)
-  created_at          DateTime       @default(now())
-  updated_at          DateTime       @default(now())
-
-  company             Company        @relation(fields: [company_id], references: [id], onDelete: Cascade)
-  service             Service?       @relation(fields: [service_id], references: [id], onDelete: SetNull)
-  subscriptions       ClientSubscription[]
-
-  @@map("app_fd14ee28a1_plans")
-}
-
-model ClientSubscription {
-  id                  String              @id @default(uuid()) @db.Uuid
-  client_id           String              @db.Uuid
-  plan_id             String              @db.Uuid
-  company_id          String              @db.Uuid
-  sessions_remaining  Int?
-  sessions_used       Int                 @default(0)
-  next_booking_date   DateTime?           @db.Date
-  last_booking_date   DateTime?           @db.Date
-  status              SubscriptionStatus  @default(active)
-  start_date          DateTime            @db.Date
-  end_date            DateTime?           @db.Date
-  amount_paid         Decimal?            @db.Decimal(10, 2)
-  payment_status      PaymentStatus       @default(pending)
-  notes               String?
-  expired_at          DateTime?
-  cancelled_at        DateTime?
-  cancellation_reason String?
-  created_at          DateTime            @default(now())
-  updated_at          DateTime            @default(now())
-
-  client              Client              @relation(fields: [client_id], references: [id], onDelete: Cascade)
-  plan                Plan                @relation(fields: [plan_id], references: [id], onDelete: Restrict)
-  company             Company             @relation(fields: [company_id], references: [id], onDelete: Cascade)
-  bookings            Booking[]
-  sessions            SubscriptionSession[]
-
-  @@map("app_fd14ee28a1_client_subscriptions")
-}
-
-model SubscriptionSession {
-  id             String            @id @default(uuid()) @db.Uuid
-  subscription_id String           @db.Uuid
-  booking_id     String?           @db.Uuid
-  company_id     String            @db.Uuid
-  session_number Int
-  status         SessionStatus     @default(scheduled)
-  scheduled_date DateTime?         @db.Date
-  completed_at   DateTime?
-  notes          String?
-  created_at     DateTime          @default(now())
-  updated_at     DateTime          @default(now())
-  scheduled_time String?
-  archived       Boolean           @default(false)
-  attendant_id   String?           @db.Uuid
-
-  subscription   ClientSubscription @relation(fields: [subscription_id], references: [id], onDelete: Cascade)
-  booking        Booking?           @relation(fields: [booking_id], references: [id], onDelete: SetNull)
-  company        Company            @relation(fields: [company_id], references: [id], onDelete: Cascade)
-  attendant      Attendant?         @relation(fields: [attendant_id], references: [id], onDelete: SetNull)
-
-  @@unique([subscription_id, session_number])
-  @@map("app_fd14ee28a1_subscription_sessions")
-}
-
-model PreOnboarding {
-  id                   String               @id @default(uuid()) @db.Uuid
-  company_token        String               @unique
-  company_nickname     String
-  company_size         CompanySize
-  business_model       String
-  max_attendants       Int                  @default(1)
-  primary_phone        String
-  features             Json?
-  is_used              Boolean              @default(false)
-  used_at              DateTime?
-  used_by_user_id      String?              @db.Uuid
-  tenant_id            String?              @db.Uuid  // Relacionamento com Tenant (white-label)
-  used_by_user         User?                @relation(fields: [used_by_user_id], references: [id], onDelete: SetNull)
-  tenant               Tenant?              @relation(fields: [tenant_id], references: [id], onDelete: SetNull)
-  notes                String?
-  created_at           DateTime             @default(now())
-  updated_at           DateTime             @default(now())
-  features_de_interesse String?
-  status               PreOnboardingStatus  @default(pending)
-  completed_at         DateTime?
-
-  @@map("app_fd14ee28a1_preonboarding")
-}
-
-model PlanOverride {
-  id            String   @id @default(uuid()) @db.Uuid
-  company_id    String   @unique @db.Uuid
-  max_attendants Int?
-  max_services  Int?
-  max_links     Int?
-  max_banners   Int?
-  notes         String?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @default(now())
-
-  company       Company  @relation(fields: [company_id], references: [id], onDelete: Cascade)
-
-  @@map("app_fd14ee28a1_plan_overrides")
-}
-
-model User {
-  id             String     @id @default(uuid()) @db.Uuid
-  email          String     @unique
-  password_hash  String
-  created_at     DateTime   @default(now())
-  updated_at     DateTime   @default(now())
-
-  companies      Company[]
-  attendants     Attendant[]
-  profiles       UserProfile[]
-  sessions       Session[]
-  preonboardings PreOnboarding[]
-
-  @@map("app_fd14ee28a1_users")
-}
-
-model Session {
-  id                  String   @id @default(uuid()) @db.Uuid
-  user_id             String   @db.Uuid
-  refresh_token_hash  String
-  user_agent          String?
-  ip_address          String?
-  expires_at          DateTime
-  revoked_at          DateTime?
-  created_at          DateTime @default(now())
-  updated_at          DateTime @default(now())
-
-  user                User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@map("app_fd14ee28a1_auth_sessions")
-}
-
-model Lead {
-  id                    String   @id @default(uuid()) @db.Uuid
-  name                  String
-  email                 String
-  phone                 String
-  business_type         String
-  custom_business_type  String?
-  attendants_count      Int?
-  source_message        String?
-  created_at            DateTime @default(now())
-  updated_at            DateTime @default(now())
-
-  @@map("app_fd14ee28a1_leads")
+enum WhatsappSessionStatus {
+  created
+  qr_code
+  authenticated
+  failed
+  disconnected
 }

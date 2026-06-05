@@ -1,7 +1,11 @@
 import type { Request, Response } from "express";
+import type { AuthenticatedRequest } from "../middleware/auth.js";
 import {
   createAttendant,
   deleteAttendant,
+  disableAttendantLogin,
+  enableAttendantLogin,
+  getAttendantById,
   getAttendantByUsername,
   getAttendantsByCompanyId,
   updateAttendant,
@@ -43,6 +47,48 @@ export const deleteAttendantHandler = async (req: Request, res: Response) => {
   try {
     const { attendantId } = req.params;
     const result = await deleteAttendant(attendantId);
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+export const getMyAttendantHandler = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    if (!req.user?.attendant_id) {
+      return res.status(404).json({ error: "Not an attendant" });
+    }
+    const result = await getAttendantById(req.user.attendant_id);
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+export const enableAttendantLoginHandler = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { attendantId } = req.params;
+    const { email } = req.body || {};
+    const result = await enableAttendantLogin(attendantId, email);
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message });
+  }
+};
+
+export const disableAttendantLoginHandler = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { attendantId } = req.params;
+    const result = await disableAttendantLogin(attendantId);
     return res.status(200).json({ data: result });
   } catch (error: any) {
     return res.status(400).json({ error: error.message });
