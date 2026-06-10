@@ -96,6 +96,24 @@ export const getTenantById = async (id: string) => {
   });
 };
 
+/**
+ * Resolve the white-label brand name for a given tenant_id (e.g. for e-mails,
+ * which run server-side without the frontend TenantContext). Falls back to the
+ * default product name when the company has no tenant or it can't be found.
+ */
+export const getBrandName = async (
+  tenantId?: string | null,
+): Promise<string> => {
+  if (tenantId) {
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true },
+    });
+    if (tenant?.name) return tenant.name;
+  }
+  return "My Beauty Calendar";
+};
+
 // Criar tenant
 export const createTenant = async (data: {
   slug: string;

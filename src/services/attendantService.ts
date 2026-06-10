@@ -2,6 +2,7 @@ import { randomBytes } from "crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma.js";
 import { sendEmail } from "./emailService.js";
+import { getBrandName } from "./tenantService.js";
 
 export const getAttendantsByCompanyId = async (companyId: string) => {
   return prisma.attendant.findMany({
@@ -111,7 +112,7 @@ export const enableAttendantLogin = async (
       email: true,
       user_id: true,
       company_id: true,
-      company: { select: { name: true } },
+      company: { select: { name: true, tenant_id: true } },
     },
   });
   if (!attendant) throw new Error("Atendente não encontrado");
@@ -166,6 +167,7 @@ export const enableAttendantLogin = async (
 
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
   const inviteUrl = `${frontendUrl.replace(/\/$/, "")}/definir-senha/${token}`;
+  const brand = await getBrandName(attendant.company.tenant_id);
 
   try {
     await sendEmail({
@@ -173,6 +175,7 @@ export const enableAttendantLogin = async (
       subject: `Seu acesso à agenda — ${attendant.company.name}`,
       type: "attendant_invite",
       data: {
+        brand_name: brand,
         attendant_name: attendant.name,
         company_name: attendant.company.name,
         invite_url: inviteUrl,

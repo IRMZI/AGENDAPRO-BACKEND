@@ -38,8 +38,14 @@ export const sendEmail = async ({
 
   const { html, text } = buildEmailContent(type, data);
 
+  // White-label: brand the sender by tenant when the caller provides it.
+  const brand =
+    (typeof data.brand_name === "string" && data.brand_name) ||
+    process.env.BRAND_NAME ||
+    "My Beauty Calendar";
+
   const info = await transporter.sendMail({
-    from: `AlignPro <${fromEmail}>`,
+    from: `${brand} <${fromEmail}>`,
     to,
     subject,
     text,

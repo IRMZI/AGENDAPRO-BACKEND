@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma.js";
 import { sendEmail } from "./emailService.js";
 import { getCompanyById } from "./companyService.js";
 import { recordBookingFinancials } from "./financialService.js";
+import { getBrandName } from "./tenantService.js";
 import { BookingStatus, type PaymentMethod } from "@prisma/client";
 
 /**
@@ -151,6 +152,7 @@ export const createBooking = async (booking: any) => {
   try {
     if (created.client_email?.trim()) {
       const companyInfo = await getCompanyById(created.company_id);
+      const brand = await getBrandName(companyInfo?.tenant_id);
       let attendantName: string | null = null;
 
       if (created.attendant_id) {
@@ -178,6 +180,7 @@ export const createBooking = async (booking: any) => {
         subject: `Agendamento Confirmado - ${companyInfo?.name}`,
         type: "booking_confirmation",
         data: {
+          brand_name: brand,
           client_name: created.client_name,
           company_name: companyInfo?.name,
           company_phone: companyInfo?.phone,
@@ -407,6 +410,7 @@ export const updateBookingStatus = async (
   try {
     if (updated.client_email?.trim()) {
       const companyInfo = await getCompanyById(updated.company_id);
+      const brand = await getBrandName(companyInfo?.tenant_id);
 
       let emailStatus: "confirmed" | "cancelled" | "completed" | null = null;
       let statusText = "";
@@ -428,6 +432,7 @@ export const updateBookingStatus = async (
           subject: `Agendamento ${statusText} - ${companyInfo?.name}`,
           type: "booking_status_update",
           data: {
+            brand_name: brand,
             client_name: updated.client_name,
             company_name: companyInfo?.name,
             company_phone: companyInfo?.phone,

@@ -639,7 +639,7 @@ async function runTool(
    ───────────────────────────────────────────────────────────── */
 function systemPrompt(): string {
   return [
-    "Você é a assistente de IA do AgendaPro, um sistema de agendamentos para negócios.",
+    "Você é a assistente de IA da plataforma de agendamentos do negócio.",
     "Você ajuda o dono do negócio a operar a plataforma por comandos em linguagem natural.",
     "",
     "Você pode: criar/cancelar/remarcar agendamentos, cadastrar e buscar clientes,",

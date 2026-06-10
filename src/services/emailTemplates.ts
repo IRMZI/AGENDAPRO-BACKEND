@@ -70,7 +70,7 @@ function generateAttendantInviteHTML(data: EmailData) {
                 <p class="muted">Este link expira em 72 horas. Se você não esperava este convite, pode ignorar este email.</p>
             </div>
             <div class="footer">
-                <p>Este é um email automático do sistema AgendaPro.</p>
+                <p>Este é um email automático do sistema ${data.brand_name || "My Beauty Calendar"}.</p>
             </div>
         </div>
     </body>
@@ -92,7 +92,7 @@ ${data.invite_url}
 Se você não esperava este convite, pode ignorar este email.
 
 ---
-Este é um email automático do sistema AgendaPro.
+Este é um email automático do sistema ${data.brand_name || "My Beauty Calendar"}.
   `;
 }
 
@@ -168,8 +168,8 @@ function generateBookingConfirmationHTML(data: EmailData) {
                 Chegue com 10 minutos de antecedência para seu atendimento.</p>
             </div>
             <div class="footer">
-                <p>Este é um email automático do sistema AlignPro.</p>
-                <p>© 2024 AlignPro - Todos os direitos reservados</p>
+                <p>Este é um email automático do sistema ${data.brand_name || "My Beauty Calendar"}.</p>
+                <p>© ${new Date().getFullYear()} ${data.brand_name || "My Beauty Calendar"} - Todos os direitos reservados</p>
             </div>
         </div>
     </body>
@@ -200,8 +200,8 @@ LEMBRETE:
 Chegue com 10 minutos de antecedência para seu atendimento.
 
 ---
-Este é um email automático do sistema AlignPro.
-© 2024 AlignPro - Todos os direitos reservados
+Este é um email automático do sistema ${data.brand_name || "My Beauty Calendar"}.
+© ${new Date().getFullYear()} ${data.brand_name || "My Beauty Calendar"} - Todos os direitos reservados
   `;
 }
 
@@ -269,7 +269,7 @@ function generateBookingReminderHTML(data: EmailData) {
                 Entre em contato conosco pelo telefone <strong>${data.company_phone}</strong></p>
             </div>
             <div class="footer">
-                <p>Este é um email automático do sistema AgendaPro.</p>
+                <p>Este é um email automático do sistema ${data.brand_name || "My Beauty Calendar"}.</p>
             </div>
         </div>
     </body>
@@ -295,7 +295,7 @@ PRECISA REAGENDAR?
 Entre em contato: ${data.company_phone}
 
 ---
-Este é um email automático do sistema AgendaPro.
+Este é um email automático do sistema ${data.brand_name || "My Beauty Calendar"}.
   `;
 }
 
@@ -366,7 +366,7 @@ function generateStatusUpdateHTML(data: EmailData) {
                 </div>
             </div>
             <div class="footer">
-                <p>Este é um email automático do sistema AgendaPro.</p>
+                <p>Este é um email automático do sistema ${data.brand_name || "My Beauty Calendar"}.</p>
             </div>
         </div>
     </body>
@@ -397,6 +397,6 @@ DETALHES:
 ${data.attendant_name ? `- Atendente: ${data.attendant_name}` : ""}
 
 ---
-Este é um email automático do sistema AgendaPro.
+Este é um email automático do sistema ${data.brand_name || "My Beauty Calendar"}.
   `;
 }
