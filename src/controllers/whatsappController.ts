@@ -8,6 +8,7 @@ import {
   refreshSessionStatus,
   requireCompanyForUser,
   sendSessionText,
+  updateReminderHours,
 } from "../services/whatsappService.js";
 
 const handleError = (res: Response, error: any) => {
@@ -78,6 +79,27 @@ export const sessionDisconnectHandler = async (
     const company = await requireCompanyForUser(uid(req));
     const session = await disconnectSession(req.params.id, company.id);
     return res.status(200).json({ data: session });
+  } catch (error: any) {
+    return handleError(res, error);
+  }
+};
+
+export const updateReminderSettingsHandler = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    const { reminder_hours_before } = (req.body ?? {}) as {
+      reminder_hours_before?: number;
+    };
+    const company = await requireCompanyForUser(uid(req));
+    const updated = await updateReminderHours(
+      company.id,
+      Number(reminder_hours_before),
+    );
+    return res
+      .status(200)
+      .json({ data: { reminder_hours_before: updated.reminder_hours_before } });
   } catch (error: any) {
     return handleError(res, error);
   }

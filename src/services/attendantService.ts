@@ -4,19 +4,67 @@ import { prisma } from "../lib/prisma.js";
 import { sendEmail } from "./emailService.js";
 import { getBrandName } from "./tenantService.js";
 
+// Sincroniza os serviços vinculados a um atendente (mesmo M2M, lado atendente).
+const syncAttendantServices = async (
+  attendantId: string,
+  serviceIds?: string[],
+) => {
+  if (!Array.isArray(serviceIds)) return;
+  const ids = [...new Set(serviceIds.filter(Boolean))];
+  await prisma.serviceAttendant.deleteMany({
+    where: { attendant_id: attendantId },
+  });
+  if (ids.length > 0) {
+    await prisma.serviceAttendant.createMany({
+      data: ids.map((service_id) => ({ service_id, attendant_id: attendantId })),
+      skipDuplicates: true,
+    });
+  }
+};
+
 export const getAttendantsByCompanyId = async (companyId: string) => {
-  return prisma.attendant.findMany({
+  const rows = await prisma.attendant.findMany({
     where: { company_id: companyId, is_active: true },
     orderBy: { name: "asc" },
+    include: { serviceAttendants: { select: { service_id: true } } },
   });
+  return rows.map(({ serviceAttendants, ...a }) => ({
+    ...a,
+    service_ids: serviceAttendants.map((sa) => sa.service_id),
+  }));
 };
 
 export const createAttendant = async (data: any) => {
   // Whitelist creatable fields — never let the body set login/identity columns.
   const { name, username, email, phone, company_id } = data ?? {};
-  return prisma.attendant.create({
+
+  // Server-side quota enforcement (mirrors AttendantManager's client-side check;
+  // 999 = unlimited). The UI blocks too, but the server is the source of truth.
+  if (company_id) {
+    const company = await prisma.company.findUnique({
+      where: { id: company_id },
+      select: { max_attendants: true },
+    });
+    const limit = company?.max_attendants ?? 1;
+    if (limit !== 999) {
+      const count = await prisma.attendant.count({
+        where: { company_id, is_active: true },
+      });
+      if (count >= limit) {
+        const err: any = new Error(
+          `Limite de atendentes atingido (${limit}). Faça upgrade do plano para adicionar mais atendentes.`,
+        );
+        err.statusCode = 409;
+        throw err;
+      }
+    }
+  }
+
+  const created = await prisma.attendant.create({
     data: { name, username, email, phone, company_id, is_active: true },
   });
+  await syncAttendantServices(created.id, data?.service_ids);
+  return created;
 };
 
 const clampPercent = (value: unknown): number | null => {
@@ -39,10 +87,12 @@ export const updateAttendant = async (attendantId: string, data: any) => {
   if (data?.commission_percent !== undefined)
     patch.commission_percent = clampPercent(data.commission_percent);
 
-  return prisma.attendant.update({
+  const updated = await prisma.attendant.update({
     where: { id: attendantId },
     data: patch,
   });
+  await syncAttendantServices(attendantId, data?.service_ids);
+  return updated;
 };
 
 export const deleteAttendant = async (attendantId: string) => {

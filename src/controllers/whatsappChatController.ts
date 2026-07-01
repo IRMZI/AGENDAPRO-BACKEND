@@ -2,12 +2,17 @@ import type { Request, Response } from "express";
 import type { AuthenticatedRequest } from "../middleware/auth.js";
 import {
   createClientFromConversation,
+  deleteConversation,
+  getClientWhatsappLinks,
+  getConversationBookings,
+  linkConversationToClient,
   listConversations,
   listMessages,
   markConversationSeen,
   processWebhookEvent,
   reactToMessage,
   sendConversationMessage,
+  updateConversationContactName,
 } from "../services/whatsappChatService.js";
 import { requireCompanyForUser } from "../services/whatsappService.js";
 
@@ -41,8 +46,10 @@ export const webhookHandler = async (req: Request, res: Response) => {
     return res.status(204).end();
   } catch (err) {
     console.error("[webhook] erro processando:", err);
-    // Sempre 200 para webhooks evitar retries infinitos com bug local
-    return res.status(200).json({ ok: false });
+    // 500 para o WAHA re-tentar: uma falha transitória (ex.: blip do banco) não
+    // deve descartar a mensagem silenciosamente. O WAHA re-tenta com backoff
+    // limitado, então não há risco de loop infinito.
+    return res.status(500).json({ ok: false });
   }
 };
 
@@ -57,6 +64,19 @@ export const listConversationsHandler = async (
     const sessionId = (req.query.sessionId as string | undefined) || undefined;
     const conversations = await listConversations(company.id, sessionId);
     return res.status(200).json({ data: conversations });
+  } catch (error: any) {
+    return handleError(res, error);
+  }
+};
+
+export const clientWhatsappLinksHandler = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    const company = await requireCompanyForUser(uid(req));
+    const links = await getClientWhatsappLinks(company.id);
+    return res.status(200).json({ data: links });
   } catch (error: any) {
     return handleError(res, error);
   }
@@ -141,6 +161,68 @@ export const markSeenHandler = async (
   try {
     const company = await requireCompanyForUser(uid(req));
     const conv = await markConversationSeen(req.params.convId, company.id);
+    return res.status(200).json({ data: conv });
+  } catch (error: any) {
+    return handleError(res, error);
+  }
+};
+
+export const linkClientHandler = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    const { clientId } = (req.body ?? {}) as { clientId?: string | null };
+    const company = await requireCompanyForUser(uid(req));
+    const conv = await linkConversationToClient(
+      req.params.convId,
+      company.id,
+      clientId ?? null,
+    );
+    return res.status(200).json({ data: conv });
+  } catch (error: any) {
+    return handleError(res, error);
+  }
+};
+
+export const deleteConversationHandler = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    const company = await requireCompanyForUser(uid(req));
+    const result = await deleteConversation(req.params.convId, company.id);
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return handleError(res, error);
+  }
+};
+
+export const conversationBookingsHandler = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    const company = await requireCompanyForUser(uid(req));
+    const bookings = await getConversationBookings(req.params.convId, company.id);
+    return res.status(200).json({ data: bookings });
+  } catch (error: any) {
+    return handleError(res, error);
+  }
+};
+
+export const updateContactNameHandler = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    const { name } = (req.body ?? {}) as { name?: string };
+    const company = await requireCompanyForUser(uid(req));
+    const conv = await updateConversationContactName(
+      req.params.convId,
+      company.id,
+      name ?? "",
+    );
     return res.status(200).json({ data: conv });
   } catch (error: any) {
     return handleError(res, error);

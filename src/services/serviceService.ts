@@ -1,23 +1,50 @@
 import { prisma } from "../lib/prisma.js";
 
+// Sincroniza os atendentes vinculados a um serviço (M2M). undefined = não mexe.
+const syncServiceAttendants = async (
+  serviceId: string,
+  attendantIds?: string[],
+) => {
+  if (!Array.isArray(attendantIds)) return;
+  const ids = [...new Set(attendantIds.filter(Boolean))];
+  await prisma.serviceAttendant.deleteMany({ where: { service_id: serviceId } });
+  if (ids.length > 0) {
+    await prisma.serviceAttendant.createMany({
+      data: ids.map((attendant_id) => ({ service_id: serviceId, attendant_id })),
+      skipDuplicates: true,
+    });
+  }
+};
+
 export const getServicesByCompanyId = async (companyId: string) => {
-  return prisma.service.findMany({
+  const rows = await prisma.service.findMany({
     where: { company_id: companyId, is_active: true },
     orderBy: { name: "asc" },
+    include: { serviceAttendants: { select: { attendant_id: true } } },
   });
+  return rows.map(({ serviceAttendants, ...s }) => ({
+    ...s,
+    attendant_ids: serviceAttendants.map((sa) => sa.attendant_id),
+  }));
 };
 
 export const createService = async (data: any) => {
-  return prisma.service.create({
-    data: { ...data, is_active: true },
+  const { attendant_ids, ...rest } = data ?? {};
+  const created = await prisma.service.create({
+    data: { ...rest, is_active: true },
   });
+  await syncServiceAttendants(created.id, attendant_ids);
+  return created;
 };
 
 export const updateService = async (serviceId: string, data: any) => {
-  return prisma.service.update({
+  const { attendant_ids, ...rest } = data ?? {};
+  const updated = await prisma.service.update({
     where: { id: serviceId },
-    data: { ...data, updated_at: new Date() },
+    data: { ...rest, updated_at: new Date() },
   });
+  await syncServiceAttendants(serviceId, attendant_ids);
+  return updated;
 };
 
 export const deleteService = async (serviceId: string) => {

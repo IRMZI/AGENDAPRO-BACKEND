@@ -75,6 +75,7 @@ type EventName =
   | "message:new"
   | "message:updated"
   | "conversation:updated"
+  | "conversation:deleted"
   | "session:status"
   | "typing";
 

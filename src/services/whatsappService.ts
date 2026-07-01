@@ -16,7 +16,9 @@ const WAHA_TO_DB: Record<string, WhatsappSessionStatus> = {
   STOPPED: WhatsappSessionStatus.disconnected,
 };
 
-const mapWahaStatus = (raw: unknown): WhatsappSessionStatus | null => {
+export const mapWahaStatus = (
+  raw: unknown,
+): WhatsappSessionStatus | null => {
   if (typeof raw !== "string") return null;
   return WAHA_TO_DB[raw.toUpperCase()] ?? null;
 };
@@ -194,12 +196,46 @@ const buildWebhookConfig = (
   if (!base || !secret) return null;
   return {
     url: `${base.replace(/\/$/, "")}/api/whatsapp/webhook/${wahaSessionId}`,
-    events: ["message", "message.any", "message.ack", "session.status"],
+    // Mantido alinhado com os eventos TRATADOS em whatsappChatService
+    // (processWebhookEvent): mensagens, ack, reações, status da sessão e
+    // presença/typing. Subscrever só o que o handler processa.
+    events: [
+      "message",
+      "message.any",
+      "message.ack",
+      "message.reaction",
+      "session.status",
+      "presence.update",
+    ],
     customHeaders: [{ name: "x-webhook-secret", value: secret }],
   };
 };
 
+// Limite de conexões WhatsApp por empresa (vendido no plano). 999 = ilimitado.
+// Espelha o padrão de max_attendants. Aplicado no servidor (a UI também
+// bloqueia, mas o servidor é a fonte da verdade — cada sessão custa infra).
+const assertWithinSessionQuota = async (companyId: string) => {
+  const company = await prisma.company.findUnique({
+    where: { id: companyId },
+    select: { max_whatsapp_sessions: true },
+  });
+  const limit = company?.max_whatsapp_sessions ?? 1;
+  if (limit === 999) return;
+  const active = await prisma.whatsappSession.count({
+    where: { company_id: companyId, is_active: true },
+  });
+  if (active >= limit) {
+    const err: any = new Error(
+      `Limite de conexões WhatsApp atingido (${limit}). Faça upgrade do plano para conectar mais números.`,
+    );
+    err.statusCode = 409;
+    throw err;
+  }
+};
+
 export const createSession = async (companyId: string, name?: string) => {
+  await assertWithinSessionQuota(companyId);
+
   const finalName = name?.trim() || "WhatsApp";
   const wahaSessionId = generateWahaSessionId(companyId, finalName);
 
@@ -303,6 +339,15 @@ export const disconnectSession = async (
       is_active: false,
       updated_at: new Date(),
     },
+  });
+};
+
+// Janela do lembrete de agendamento (horas antes). Limitada a 1h..7 dias.
+export const updateReminderHours = async (companyId: string, hours: number) => {
+  const h = Math.max(1, Math.min(168, Math.round(hours) || 24));
+  return prisma.company.update({
+    where: { id: companyId },
+    data: { reminder_hours_before: h },
   });
 };
 

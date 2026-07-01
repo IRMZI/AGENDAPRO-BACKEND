@@ -3,6 +3,10 @@ import { sendEmail } from "./emailService.js";
 import { getCompanyById } from "./companyService.js";
 import { recordBookingFinancials } from "./financialService.js";
 import { getBrandName } from "./tenantService.js";
+import {
+  maybeSendBookingConfirmation,
+  maybeSendBookingStatusMessage,
+} from "./bookingAutomationService.js";
 import { BookingStatus, type PaymentMethod } from "@prisma/client";
 
 /**
@@ -196,6 +200,15 @@ export const createBooking = async (booking: any) => {
     console.error("Failed to send confirmation email:", error);
   }
 
+  // Confirmação por WhatsApp (opt-in: só dispara se a empresa tiver um template
+  // booking_confirmation ativo e um WhatsApp conectado). Não bloqueia a criação.
+  try {
+    await maybeSendBookingConfirmation(created.id);
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("Failed to send WhatsApp confirmation:", error);
+  }
+
   return created;
 };
 
@@ -365,6 +378,11 @@ export const updateBookingStatus = async (
   notes?: string,
   opts?: { total_amount?: number | null; payment_method?: PaymentMethod | null },
 ) => {
+  // Status anterior, p/ só disparar a automação de WhatsApp quando muda de fato.
+  const prev = await prisma.booking.findUnique({
+    where: { id: bookingId },
+    select: { status: true },
+  });
   const updated = await prisma.$transaction(async (tx) => {
     if (status === BookingStatus.completed) {
       // Optimistic guard: only the first transition to completed records
@@ -448,6 +466,17 @@ export const updateBookingStatus = async (
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error("Failed to send status update email:", error);
+  }
+
+  // Automação de WhatsApp por status (opt-in: template booking_status_<status>
+  // ativo). Só dispara quando o status realmente muda. Não bloqueia.
+  try {
+    if (prev && prev.status !== status) {
+      await maybeSendBookingStatusMessage(bookingId, status);
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("Failed to send WhatsApp status automation:", error);
   }
 
   return updated;

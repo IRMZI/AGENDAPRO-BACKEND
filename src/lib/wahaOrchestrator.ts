@@ -172,4 +172,11 @@ export const wahaOrchestrator = {
       `/sessions/${sessionId}/getChatPicture`,
       { chatId },
     ),
+
+  // Metadados do grupo (inclui o nome/subject). GOWS retorna o nome em `Name`.
+  getGroupMetadata: (sessionId: string, groupId: string) =>
+    call<{ Name?: string; subject?: string; name?: string; [k: string]: unknown }>(
+      "GET",
+      `/sessions/${sessionId}/groups/${encodeURIComponent(groupId)}/metadata`,
+    ),
 };

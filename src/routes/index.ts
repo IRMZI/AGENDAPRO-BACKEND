@@ -159,16 +159,28 @@ import {
   sessionQrHandler,
   sessionSendHandler,
   sessionStatusHandler,
+  updateReminderSettingsHandler,
 } from "../controllers/whatsappController.js";
 import {
+  clientWhatsappLinksHandler,
+  conversationBookingsHandler,
   createClientFromConversationHandler,
+  deleteConversationHandler,
+  linkClientHandler,
   listConversationsHandler,
   listMessagesHandler,
   markSeenHandler,
   reactMessageHandler,
   sendMessageHandler,
+  updateContactNameHandler,
   webhookHandler,
 } from "../controllers/whatsappChatController.js";
+import {
+  createTemplateHandler,
+  deleteTemplateHandler,
+  listTemplatesHandler,
+  updateTemplateHandler,
+} from "../controllers/messageTemplateController.js";
 import {
   getSummaryHandler,
   getReportsHandler,
@@ -715,6 +727,14 @@ router.post("/whatsapp", requireAuth, requireRole("admin"), createSessionHandler
 // Webhook recebido dos workers WAHA (sem JWT - valida secret)
 router.post("/whatsapp/webhook/:wahaSessionId", webhookHandler);
 
+// Configuração do lembrete de agendamento (horas antes)
+router.patch(
+  "/whatsapp/reminder-settings",
+  requireAuth,
+  requireRole("admin"),
+  updateReminderSettingsHandler,
+);
+
 // Sessions
 router.get("/whatsapp/:id/qr", requireAuth, requireRole("admin"), sessionQrHandler);
 router.get(
@@ -737,6 +757,12 @@ router.post(
 );
 
 // Chat (conversas + mensagens)
+router.get(
+  "/whatsapp/client-links",
+  requireAuth,
+  requireRole("admin"),
+  clientWhatsappLinksHandler,
+);
 router.get(
   "/whatsapp/conversations",
   requireAuth,
@@ -767,11 +793,61 @@ router.post(
   requireRole("admin"),
   createClientFromConversationHandler,
 );
+router.patch(
+  "/whatsapp/conversations/:convId/contact",
+  requireAuth,
+  requireRole("admin"),
+  updateContactNameHandler,
+);
+router.get(
+  "/whatsapp/conversations/:convId/bookings",
+  requireAuth,
+  requireRole("admin"),
+  conversationBookingsHandler,
+);
+router.patch(
+  "/whatsapp/conversations/:convId/link-client",
+  requireAuth,
+  requireRole("admin"),
+  linkClientHandler,
+);
 router.post(
   "/whatsapp/conversations/:convId/react",
   requireAuth,
   requireRole("admin"),
   reactMessageHandler,
+);
+router.delete(
+  "/whatsapp/conversations/:convId",
+  requireAuth,
+  requireRole("admin"),
+  deleteConversationHandler,
+);
+
+// Respostas rápidas / templates de mensagem (company-scoped)
+router.get(
+  "/message-templates",
+  requireAuth,
+  requireRole("admin"),
+  listTemplatesHandler,
+);
+router.post(
+  "/message-templates",
+  requireAuth,
+  requireRole("admin"),
+  createTemplateHandler,
+);
+router.patch(
+  "/message-templates/:id",
+  requireAuth,
+  requireRole("admin"),
+  updateTemplateHandler,
+);
+router.delete(
+  "/message-templates/:id",
+  requireAuth,
+  requireRole("admin"),
+  deleteTemplateHandler,
 );
 
 // ============================================================================

@@ -3,8 +3,13 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Conexão do app (runtime): pooler do Neon (PgBouncer).
+  url       = env("DATABASE_URL")
+  // Conexão DIRETA (sem -pooler): usada só por `prisma migrate`/`db`. O pooler
+  // não suporta os locks/DDL que a migration engine precisa, então migrate
+  // deploy no start do container ia falhar contra a DATABASE_URL pooled.
+  directUrl = env("DIRECT_URL")
 }
 
 model Tenant {
@@ -54,6 +59,11 @@ model Company {
   company_size                     CompanySize?
   business_model                   String?
   max_attendants                   Int?                               @default(1)
+  max_whatsapp_sessions            Int?                               @default(1)
+  reminder_hours_before            Int?                               @default(24)
+  // Regra do link público: serviço SEM atendente vinculado aparece p/ todos
+  // (true) ou some até ter um vínculo (false).
+  show_unassigned_services         Boolean                            @default(true)
   features                         Json?
   primary_phone                    String?
   first_login_completed            Boolean                            @default(false)
@@ -83,6 +93,7 @@ model Company {
   subscription_sessions            SubscriptionSession[]
   user_profiles                    UserProfile[]
   whatsapp_sessions     WhatsappSession[]
+  message_templates     MessageTemplate[]
 
   @@map("app_fd14ee28a1_companies")
 }
@@ -125,6 +136,7 @@ model Attendant {
   user               User?                 @relation(fields: [user_id], references: [id])
   bookings           Booking[]
   sessions           SubscriptionSession[]
+  serviceAttendants  ServiceAttendant[]
 
   @@unique([company_id, username])
   @@unique([user_id])
@@ -154,6 +166,8 @@ model Booking {
   total_amount    Decimal?              @db.Decimal(10, 2)
   payment_method  PaymentMethod?
   completed_at    DateTime?
+  // WhatsApp: marca quando o lembrete automático já foi enviado (idempotência).
+  reminder_sent_at DateTime?
   bookingServices BookingService[]
   attendant       Attendant?            @relation(fields: [attendant_id], references: [id])
   client          Client?               @relation(fields: [client_id], references: [id])
@@ -193,8 +207,23 @@ model Service {
   bookings         Booking[]
   plans            Plan[]
   company          Company          @relation(fields: [company_id], references: [id], onDelete: Cascade)
+  serviceAttendants ServiceAttendant[]
 
   @@map("app_fd14ee28a1_services")
+}
+
+// Vínculo M2M serviço ↔ atendente: define quais atendentes podem fazer cada
+// serviço (filtra o link público de agendamento). Editável dos dois lados.
+model ServiceAttendant {
+  service_id   String    @db.Uuid
+  attendant_id String    @db.Uuid
+  created_at   DateTime  @default(now())
+  service      Service   @relation(fields: [service_id], references: [id], onDelete: Cascade)
+  attendant    Attendant @relation(fields: [attendant_id], references: [id], onDelete: Cascade)
+
+  @@id([service_id, attendant_id])
+  @@index([attendant_id])
+  @@map("app_fd14ee28a1_service_attendants")
 }
 
 model CompanyBusinessHours {
@@ -281,8 +310,9 @@ model Client {
   notes         String?
   created_at    DateTime             @default(now())
   updated_at    DateTime             @default(now())
-  bookings      Booking[]
-  subscriptions ClientSubscription[]
+  bookings          Booking[]
+  subscriptions     ClientSubscription[]
+  whatsapp_contacts WhatsappContact[]
   company       Company              @relation(fields: [company_id], references: [id], onDelete: Cascade)
 
   @@unique([company_id, phone])
@@ -458,9 +488,17 @@ model WhatsappContact {
   phone           String?
   profile_pic_url String?
   is_business     Boolean               @default(false)
+  // Vínculo MANUAL e explícito a um cliente do CRM (sobrevive mesmo se o
+  // telefone do WhatsApp não bater com o cadastrado). Tem prioridade sobre o
+  // match automático por telefone.
+  client_id       String?               @db.Uuid
+  // Desvínculo explícito: impede o match automático por telefone de
+  // re-vincular um contato que o usuário removeu de propósito.
+  client_link_blocked Boolean           @default(false)
   created_at      DateTime              @default(now())
   updated_at      DateTime              @default(now())
   session         WhatsappSession       @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  client          Client?               @relation(fields: [client_id], references: [id], onDelete: SetNull)
   conversations   WhatsappConversation[]
 
   @@unique([session_id, wa_id])
@@ -554,7 +592,32 @@ model WhatsappSession {
   company         Company                @relation(fields: [company_id], references: [id], onDelete: Cascade)
 
   @@unique([company_id, waha_session_id])
+  // waha_session_id é gerado com prefixo da empresa + aleatório, então é único
+  // globalmente. Tornamos isso explícito no banco: o webhook resolve a sessão só
+  // pelo waha_session_id (sem company), e sem esta constraint dois registros com
+  // o mesmo id atribuiriam eventos à empresa errada.
+  @@unique([waha_session_id])
   @@map("app_fd14ee28a1_whatsapp_sessions")
+}
+
+// Modelos de mensagem reutilizáveis: respostas rápidas (inbox) e, no futuro,
+// confirmação/lembrete de agendamento e auto-resposta. `category` é string
+// (não enum) para simplificar migrações. body suporta variáveis {{cliente}} etc.
+model MessageTemplate {
+  id         String   @id @default(uuid()) @db.Uuid
+  company_id String   @db.Uuid
+  category   String   @default("quick_reply")
+  title      String
+  body       String
+  shortcut   String?
+  sort_order Int      @default(0)
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+  company    Company  @relation(fields: [company_id], references: [id], onDelete: Cascade)
+
+  @@index([company_id, category])
+  @@map("app_fd14ee28a1_message_templates")
 }
 
 // ============================================================================
