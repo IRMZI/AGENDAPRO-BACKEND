@@ -34,6 +34,29 @@ export const getAttendantsByCompanyId = async (companyId: string) => {
   }));
 };
 
+/**
+ * Public roster (no auth) for the company booking page. Display-safe fields
+ * only — never email/phone/commission/login. Includes the profile fields so the
+ * page can render avatars + social buttons per attendant.
+ */
+export const getPublicAttendantsByCompanyId = async (companyId: string) => {
+  return prisma.attendant.findMany({
+    where: { company_id: companyId, is_active: true },
+    orderBy: { name: "asc" },
+    select: {
+      id: true,
+      company_id: true,
+      name: true,
+      username: true,
+      is_active: true,
+      photo_url: true,
+      whatsapp: true,
+      instagram: true,
+      maps_url: true,
+    },
+  });
+};
+
 export const createAttendant = async (data: any) => {
   // Whitelist creatable fields — never let the body set login/identity columns.
   const {

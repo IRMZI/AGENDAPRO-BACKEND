@@ -8,6 +8,7 @@ import {
   getAttendantById,
   getAttendantByUsername,
   getAttendantsByCompanyId,
+  getPublicAttendantsByCompanyId,
   updateAttendant,
   updateAttendantProfile,
 } from "../services/attendantService.js";
@@ -19,6 +20,20 @@ export const getAttendantsByCompanyHandler = async (
   try {
     const { companyId } = req.params;
     const result = await getAttendantsByCompanyId(companyId);
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// Public (no auth): roster for the company booking page (display-safe fields).
+export const getPublicAttendantsByCompanyHandler = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { companyId } = req.params;
+    const result = await getPublicAttendantsByCompanyId(companyId);
     return res.status(200).json({ data: result });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });

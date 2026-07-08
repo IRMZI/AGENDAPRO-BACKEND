@@ -78,6 +78,7 @@ import {
   enableAttendantLoginHandler,
   getAttendantByUsernameHandler,
   getAttendantsByCompanyHandler,
+  getPublicAttendantsByCompanyHandler,
   getMyAttendantHandler,
   updateAttendantHandler,
   updateMyAttendantHandler,
@@ -415,6 +416,12 @@ router.get(
   requireAuth,
   requireCompanyAccess,
   getAttendantsByCompanyHandler,
+);
+// Public roster for the company booking page (anonymous visitors).
+router.get(
+  "/attendants/company/:companyId/public",
+  publicReadLimiter,
+  getPublicAttendantsByCompanyHandler,
 );
 // Attendant fetches only their own record (no roster exposure).
 router.get("/attendants/me", requireAuth, getMyAttendantHandler);
