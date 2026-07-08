@@ -70,3 +70,11 @@ export const publicReadLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 90,
 });
+
+// Image uploads are authed but still capped so a compromised token can't spam
+// the bucket. Generous enough for editing a profile + a batch of services.
+export const uploadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: "Muitos envios de imagem. Aguarde um instante e tente novamente.",
+});

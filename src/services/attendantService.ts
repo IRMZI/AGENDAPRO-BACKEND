@@ -36,7 +36,17 @@ export const getAttendantsByCompanyId = async (companyId: string) => {
 
 export const createAttendant = async (data: any) => {
   // Whitelist creatable fields — never let the body set login/identity columns.
-  const { name, username, email, phone, company_id } = data ?? {};
+  const {
+    name,
+    username,
+    email,
+    phone,
+    company_id,
+    photo_url,
+    whatsapp,
+    instagram,
+    maps_url,
+  } = data ?? {};
 
   // Server-side quota enforcement (mirrors AttendantManager's client-side check;
   // 999 = unlimited). The UI blocks too, but the server is the source of truth.
@@ -61,7 +71,18 @@ export const createAttendant = async (data: any) => {
   }
 
   const created = await prisma.attendant.create({
-    data: { name, username, email, phone, company_id, is_active: true },
+    data: {
+      name,
+      username,
+      email,
+      phone,
+      company_id,
+      is_active: true,
+      photo_url: photo_url || null,
+      whatsapp: whatsapp || null,
+      instagram: instagram || null,
+      maps_url: maps_url || null,
+    },
   });
   await syncAttendantServices(created.id, data?.service_ids);
   return created;
@@ -86,6 +107,11 @@ export const updateAttendant = async (attendantId: string, data: any) => {
     patch.commission_enabled = Boolean(data.commission_enabled);
   if (data?.commission_percent !== undefined)
     patch.commission_percent = clampPercent(data.commission_percent);
+  // Public profile fields (avatar + social buttons on the booking page).
+  if (data?.photo_url !== undefined) patch.photo_url = data.photo_url || null;
+  if (data?.whatsapp !== undefined) patch.whatsapp = data.whatsapp || null;
+  if (data?.instagram !== undefined) patch.instagram = data.instagram || null;
+  if (data?.maps_url !== undefined) patch.maps_url = data.maps_url || null;
 
   const updated = await prisma.attendant.update({
     where: { id: attendantId },
@@ -93,6 +119,23 @@ export const updateAttendant = async (attendantId: string, data: any) => {
   });
   await syncAttendantServices(attendantId, data?.service_ids);
   return updated;
+};
+
+/**
+ * Self-service profile update: an attendant editing their OWN public profile.
+ * Whitelists only display fields — never login/identity/commission/is_active.
+ */
+export const updateAttendantProfile = async (
+  attendantId: string,
+  data: any,
+) => {
+  const patch: Record<string, unknown> = { updated_at: new Date() };
+  if (data?.photo_url !== undefined) patch.photo_url = data.photo_url || null;
+  if (data?.whatsapp !== undefined) patch.whatsapp = data.whatsapp || null;
+  if (data?.instagram !== undefined) patch.instagram = data.instagram || null;
+  if (data?.maps_url !== undefined) patch.maps_url = data.maps_url || null;
+
+  return prisma.attendant.update({ where: { id: attendantId }, data: patch });
 };
 
 export const deleteAttendant = async (attendantId: string) => {
@@ -141,6 +184,11 @@ export const getAttendantByUsername = async (
       name: true,
       username: true,
       is_active: true,
+      // Display-safe public profile (avatar + social buttons).
+      photo_url: true,
+      whatsapp: true,
+      instagram: true,
+      maps_url: true,
     },
   });
 };

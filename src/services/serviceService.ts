@@ -28,6 +28,32 @@ export const getServicesByCompanyId = async (companyId: string) => {
   }));
 };
 
+/**
+ * Public-facing service list (no auth) used by the booking pages. Returns only
+ * display-safe fields; keeps attendant_ids so the page can filter which
+ * services a given attendant offers.
+ */
+export const getPublicServicesByCompanyId = async (companyId: string) => {
+  const rows = await prisma.service.findMany({
+    where: { company_id: companyId, is_active: true },
+    orderBy: { name: "asc" },
+    select: {
+      id: true,
+      company_id: true,
+      name: true,
+      description: true,
+      duration_minutes: true,
+      price: true,
+      image_url: true,
+      serviceAttendants: { select: { attendant_id: true } },
+    },
+  });
+  return rows.map(({ serviceAttendants, ...s }) => ({
+    ...s,
+    attendant_ids: serviceAttendants.map((sa) => sa.attendant_id),
+  }));
+};
+
 export const createService = async (data: any) => {
   const { attendant_ids, ...rest } = data ?? {};
   const created = await prisma.service.create({

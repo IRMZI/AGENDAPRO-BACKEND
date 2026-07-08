@@ -5,6 +5,7 @@ import {
   getPlanById,
   getPlans,
   getServicesByCompanyId,
+  getPublicServicesByCompanyId,
   updateService,
 } from "../services/serviceService.js";
 
@@ -15,6 +16,20 @@ export const getServicesByCompanyHandler = async (
   try {
     const { companyId } = req.params;
     const result = await getServicesByCompanyId(companyId);
+    return res.status(200).json({ data: result });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// Public (no auth): the booking page shows the service list to anonymous visitors.
+export const getPublicServicesByCompanyHandler = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const { companyId } = req.params;
+    const result = await getPublicServicesByCompanyId(companyId);
     return res.status(200).json({ data: result });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });

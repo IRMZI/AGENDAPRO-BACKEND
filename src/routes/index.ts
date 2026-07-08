@@ -1,5 +1,8 @@
 import { Router } from "express";
+import type { Request, Response, NextFunction } from "express";
+import multer from "multer";
 import { healthCheck } from "../controllers/healthController.js";
+import { uploadImageHandler } from "../controllers/uploadController.js";
 import { sendEmailHandler } from "../controllers/emailController.js";
 import { getTodayAvailabilityHandler } from "../controllers/availabilityController.js";
 import { searchClientsPublicHandler } from "../controllers/clientSearchController.js";
@@ -31,6 +34,7 @@ import {
   authLimiter,
   publicWriteLimiter,
   publicReadLimiter,
+  uploadLimiter,
 } from "../middleware/rateLimit.js";
 import {
   ownsBooking,
@@ -76,6 +80,7 @@ import {
   getAttendantsByCompanyHandler,
   getMyAttendantHandler,
   updateAttendantHandler,
+  updateMyAttendantHandler,
 } from "../controllers/attendantController.js";
 import {
   createServiceHandler,
@@ -83,6 +88,7 @@ import {
   getPlanByIdHandler,
   getPlansHandler,
   getServicesByCompanyHandler,
+  getPublicServicesByCompanyHandler,
   updateServiceHandler,
 } from "../controllers/serviceController.js";
 import {
@@ -201,7 +207,38 @@ import { aiChatHandler } from "../controllers/aiController.js";
 
 const router = Router();
 
+// Image uploads: in-memory multipart parsing (streamed straight to the bucket),
+// 5MB cap, image types only. Multer errors are translated to a clean 400 by the
+// wrapper below instead of falling through to the generic 500 handler.
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (["image/jpeg", "image/png", "image/webp"].includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Formato inválido. Envie uma imagem JPG, PNG ou WEBP."));
+    }
+  },
+});
+
+const singleImage = (req: Request, res: Response, next: NextFunction) => {
+  imageUpload.single("file")(req, res, (err: unknown) => {
+    if (err) {
+      const message =
+        (err as { code?: string }).code === "LIMIT_FILE_SIZE"
+          ? "Imagem muito grande. O limite é 5MB."
+          : (err as Error).message || "Falha no upload da imagem.";
+      return res.status(400).json({ error: message });
+    }
+    return next();
+  });
+};
+
 router.get("/health", healthCheck);
+
+// Authenticated image upload (owner or logged-in attendant) → { url }.
+router.post("/uploads", requireAuth, uploadLimiter, singleImage, uploadImageHandler);
 
 router.post("/auth/signup", authLimiter, signUpHandler);
 router.post("/auth/login", authLimiter, signInHandler);
@@ -381,6 +418,9 @@ router.get(
 );
 // Attendant fetches only their own record (no roster exposure).
 router.get("/attendants/me", requireAuth, getMyAttendantHandler);
+// Attendant self-service: edit own public profile (photo + social links).
+// Must stay above "/attendants/:attendantId" so "me" isn't read as an id.
+router.patch("/attendants/me", requireAuth, updateMyAttendantHandler);
 router.post(
   "/attendants",
   requireAuth,
@@ -427,6 +467,12 @@ router.get(
   requireAuth,
   requireCompanyAccess,
   getServicesByCompanyHandler,
+);
+// Public list for the booking page (anonymous visitors) — display-safe fields only.
+router.get(
+  "/services/company/:companyId/public",
+  publicReadLimiter,
+  getPublicServicesByCompanyHandler,
 );
 router.post(
   "/services",

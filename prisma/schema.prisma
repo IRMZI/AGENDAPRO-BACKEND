@@ -129,6 +129,11 @@ model Attendant {
   // Optional commission (Phase 1): opt-in fixed % of the gross service price.
   commission_enabled Boolean               @default(false)
   commission_percent Decimal?              @db.Decimal(5, 2)
+  // Public profile: avatar + social buttons shown on the booking page.
+  photo_url          String?
+  whatsapp           String?
+  instagram          String?
+  maps_url           String?
   banners            AttendantBanner?
   links              AttendantLink?
   weekdays           AttendantWeekday[]
@@ -201,6 +206,8 @@ model Service {
   duration_minutes Int              @default(30)
   price            Decimal?         @db.Decimal(10, 2)
   is_active        Boolean          @default(true)
+  // Public profile: thumbnail shown on the booking page service list.
+  image_url        String?
   created_at       DateTime         @default(now())
   updated_at       DateTime         @default(now())
   bookingServices  BookingService[]
