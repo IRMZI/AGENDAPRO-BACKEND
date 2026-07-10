@@ -205,6 +205,12 @@ import {
   listPayoutsHandler,
 } from "../controllers/financialController.js";
 import { aiChatHandler } from "../controllers/aiController.js";
+import {
+  getPublicKeyHandler,
+  subscribeHandler,
+  unsubscribeHandler,
+  testPushHandler,
+} from "../controllers/pushController.js";
 
 const router = Router();
 
@@ -944,5 +950,15 @@ router.get("/financial/payouts/:companyId", ...fin, listPayoutsHandler);
 // company-scoped. A 15s per-company cooldown is enforced inside the handler.
 // ============================================================================
 router.post("/ai/chat", requireAuth, requireRole("admin"), aiChatHandler);
+
+// ============================================================================
+// Web Push (PWA) — inscrição de notificações por usuário autenticado.
+// A chave pública VAPID é servida pelo backend p/ o frontend não precisar de
+// rebuild ao rotacionar a chave. Todas as rotas exigem login.
+// ============================================================================
+router.get("/push/public-key", requireAuth, getPublicKeyHandler);
+router.post("/push/subscribe", requireAuth, subscribeHandler);
+router.post("/push/unsubscribe", requireAuth, unsubscribeHandler);
+router.post("/push/test", requireAuth, testPushHandler);
 
 export default router;

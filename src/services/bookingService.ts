@@ -7,6 +7,7 @@ import {
   maybeSendBookingConfirmation,
   maybeSendBookingStatusMessage,
 } from "./bookingAutomationService.js";
+import { sendPushToUser } from "./pushService.js";
 import { BookingStatus, type PaymentMethod } from "@prisma/client";
 
 /**
@@ -207,6 +208,27 @@ export const createBooking = async (booking: any) => {
   } catch (error) {
     // eslint-disable-next-line no-console
     console.error("Failed to send WhatsApp confirmation:", error);
+  }
+
+  // Push (PWA) para o dono da empresa: avisa em tempo real do novo agendamento
+  // mesmo com o app fechado. Best-effort — nunca bloqueia a criação.
+  try {
+    const companyInfo = await getCompanyById(created.company_id);
+    const ownerUserId = (companyInfo as { user_id?: string } | null)?.user_id;
+    if (ownerUserId) {
+      const when = [created.booking_date, created.booking_time]
+        .filter(Boolean)
+        .join(" às ");
+      await sendPushToUser(ownerUserId, {
+        title: "Novo agendamento",
+        body: `${created.client_name || "Cliente"}${when ? ` • ${when}` : ""}`,
+        url: "/agenda",
+        tag: `booking-${created.id}`,
+      });
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("Failed to send push notification:", error);
   }
 
   return created;

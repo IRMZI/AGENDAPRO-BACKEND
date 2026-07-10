@@ -451,8 +451,26 @@ model User {
   companies      Company?
   preonboardings PreOnboarding[]
   profiles       UserProfile[]
+  push_subscriptions PushSubscription[]
 
   @@map("app_fd14ee28a1_users")
+}
+
+model PushSubscription {
+  id         String   @id @default(uuid()) @db.Uuid
+  user_id    String   @db.Uuid
+  // Endpoint único do serviço de push do browser (FCM/Mozilla/WNS). É a chave
+  // natural de uma inscrição — um mesmo device re-inscrevendo faz upsert nele.
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  user_agent String?
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("app_fd14ee28a1_push_subscriptions")
 }
 
 model Session {
