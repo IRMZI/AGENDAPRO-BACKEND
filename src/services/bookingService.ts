@@ -216,12 +216,56 @@ export const createBooking = async (booking: any) => {
     const companyInfo = await getCompanyById(created.company_id);
     const ownerUserId = (companyInfo as { user_id?: string } | null)?.user_id;
     if (ownerUserId) {
-      const when = [created.booking_date, created.booking_time]
+      // Nome da atendente (se houver vínculo).
+      let attendantName: string | null = null;
+      if (created.attendant_id) {
+        const a = await prisma.attendant.findUnique({
+          where: { id: created.attendant_id },
+          select: { name: true },
+        });
+        attendantName = a?.name || null;
+      }
+
+      // Serviço(s) do agendamento.
+      const bs = await prisma.bookingService.findMany({
+        where: { booking_id: created.id },
+        include: { service: { select: { name: true } } },
+      });
+      const serviceNames =
+        bs.map((x: any) => x.service?.name).filter(Boolean).join(", ") ||
+        created.service ||
+        null;
+
+      // Data em pt-BR. booking_date é gravado à meia-noite UTC, então formata
+      // em UTC para não "voltar" um dia dependendo do fuso do servidor.
+      const rawDate = created.booking_date;
+      let dateLabel = "";
+      if (rawDate) {
+        const d = new Date(rawDate as any);
+        dateLabel = isNaN(d.getTime())
+          ? String(rawDate)
+          : d.toLocaleDateString("pt-BR", {
+              weekday: "short",
+              day: "2-digit",
+              month: "2-digit",
+              timeZone: "UTC",
+            });
+      }
+      const time = created.booking_time || "";
+      const when = [dateLabel, time && `às ${time}`].filter(Boolean).join(" ");
+
+      // Linha 1: cliente • data às hora | Linha 2: serviço · com atendente.
+      const line1 = [created.client_name || "Cliente", when]
         .filter(Boolean)
-        .join(" às ");
+        .join(" • ");
+      const line2 = [serviceNames, attendantName && `com ${attendantName}`]
+        .filter(Boolean)
+        .join(" · ");
+      const body = [line1, line2].filter(Boolean).join("\n");
+
       await sendPushToUser(ownerUserId, {
         title: "Novo agendamento",
-        body: `${created.client_name || "Cliente"}${when ? ` • ${when}` : ""}`,
+        body,
         url: "/agenda",
         tag: `booking-${created.id}`,
       });
