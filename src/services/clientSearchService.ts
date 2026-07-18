@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { assertCompanyBookable } from "./companyService.js";
 
 type ClientSearchResult = {
   id: string;
@@ -15,6 +16,10 @@ export const searchClientsPublic = async (
   companyId: string,
   searchQuery: string,
 ): Promise<ClientSearchResult[]> => {
+  // Endpoint público que devolve nome/telefone de clientes: só responde se a
+  // empresa estiver ativa (conta suspensa ou trial expirado não vaza PII).
+  await assertCompanyBookable(companyId);
+
   const queryStart = Date.now();
   console.log('[CLIENT_SEARCH_SERVICE] 🏗️ Iniciando busca no banco:', {
     companyId,

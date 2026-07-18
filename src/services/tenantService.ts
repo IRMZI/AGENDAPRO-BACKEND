@@ -97,6 +97,21 @@ export const getTenantById = async (id: string) => {
 };
 
 /**
+ * A empresa é a "conta de WhatsApp default" de algum tenant? (i.e., é usada
+ * como remetente do onboarding do teste grátis). Só ela pode customizar as
+ * mensagens de trial — nas demais isso seria dado morto, já que o fluxo só lê
+ * os templates da empresa operadora.
+ */
+export const isDefaultSenderCompany = async (
+  companyId: string,
+): Promise<boolean> => {
+  const count = await prisma.tenant.count({
+    where: { onboarding_company_id: companyId },
+  });
+  return count > 0;
+};
+
+/**
  * Resolve the white-label brand name for a given tenant_id (e.g. for e-mails,
  * which run server-side without the frontend TenantContext). Falls back to the
  * default product name when the company has no tenant or it can't be found.
@@ -163,6 +178,10 @@ export const updateTenant = async (
     logo_url: string;
     favicon_url: string;
     is_active: boolean;
+    // Empresa operadora que envia o onboarding do teste grátis pelo WhatsApp,
+    // e host do app deste tenant (base do link mágico).
+    onboarding_company_id: string | null;
+    app_url: string | null;
   }>,
 ) => {
   return prisma.tenant.update({
@@ -191,7 +210,10 @@ export const seedDefaultTenants = async () => {
       });
       results.push({ action: "created", tenant: created });
     } else {
-      // Atualiza os domínios se já existir
+      // Atualiza os domínios se já existir.
+      // NÃO troque por `data: tenantData`: campos configurados na operação
+      // (onboarding_company_id, app_url) não existem no DEFAULT_TENANTS e
+      // seriam apagados a cada seed — quebrando o envio do teste grátis.
       const updated = await prisma.tenant.update({
         where: { slug: tenantData.slug },
         data: {

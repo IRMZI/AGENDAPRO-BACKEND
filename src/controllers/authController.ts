@@ -4,7 +4,7 @@ import {
   logoutSession,
   refreshSession,
   registerUser,
-  setAttendantPassword,
+  setPasswordWithToken,
 } from "../services/authService.js";
 import type { AuthenticatedRequest } from "../middleware/auth.js";
 
@@ -86,7 +86,7 @@ export const setPasswordHandler = async (req: Request, res: Response) => {
     if (!token || !password) {
       return res.status(400).json({ error: "Missing token or password" });
     }
-    const result = await setAttendantPassword(
+    const result = await setPasswordWithToken(
       token,
       password,
       req.headers["user-agent"],

@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { verifyAccessToken, type UserRole } from "../lib/jwt.js";
 import { resolveUserContext } from "../services/authContextService.js";
+import { getCompanyAccessCached, isBookable } from "../services/companyService.js";
 
 export type AuthenticatedRequest = Request & {
   user?: {
@@ -118,6 +119,45 @@ export const requireCompanyAccess = async (
   const callerCompanyId = await resolveCallerCompanyId(req);
   if (!callerCompanyId || callerCompanyId !== companyId) {
     return res.status(403).json({ error: "Forbidden" });
+  }
+  return next();
+};
+
+/**
+ * Bloqueia a empresa com teste expirado ou conta suspensa. Roda DEPOIS de
+ * requireAuth em toda rota da empresa.
+ *
+ * Gate na company do TOKEN (resolveCallerCompanyId), nunca no companyId do
+ * request: metade das rotas (ex.: PATCH /bookings/:id) não carrega companyId.
+ * Sem company (signup que ainda não criou empresa) passa direto — é o que
+ * mantém o fluxo signup → criar empresa funcionando.
+ *
+ * 402 e não 403: 403 já é usado por requireRole/requireCompanyAccess/ownership,
+ * e o frontend precisa distinguir "sem permissão" de "conta bloqueada".
+ */
+export const requireActiveCompany = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const companyId = await resolveCallerCompanyId(req);
+  if (!companyId) return next();
+
+  const access = await getCompanyAccessCached(companyId);
+  if (!access) return next(); // deixa o handler devolver 404
+
+  if (!isBookable(access)) {
+    return res.status(402).json({
+      error:
+        access.subscription_status === "expired"
+          ? "Seu período de teste terminou."
+          : "Esta conta está temporariamente suspensa.",
+      code: "TRIAL_EXPIRED",
+      subscription_status: access.subscription_status,
+    });
   }
   return next();
 };

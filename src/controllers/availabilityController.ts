@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { respondWithError } from "../middleware/logging.js";
 import {
   getAvailability,
   suggestAttendantsForDay,
@@ -29,6 +30,8 @@ export const getTodayAvailabilityHandler = async (
     if (error.message === "Attendant not found") {
       return res.status(404).json({ error: "Attendant not found" });
     }
+    // Empresa inativa/expirada → 403 (não 500): é estado esperado.
+    if (error?.status) return respondWithError(res, error);
 
     return res.status(500).json({
       error: "Internal server error",
@@ -48,6 +51,7 @@ export const suggestAttendantsHandler = async (req: Request, res: Response) => {
     const result = await suggestAttendantsForDay(companyId, date, serviceId);
     return res.status(200).json({ data: result });
   } catch (error: any) {
+    if (error?.status) return respondWithError(res, error);
     return res.status(500).json({
       error: "Internal server error",
       details: error.message,

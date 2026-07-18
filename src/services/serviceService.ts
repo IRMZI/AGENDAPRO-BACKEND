@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { assertCompanyBookable } from "./companyService.js";
 
 // Sincroniza os atendentes vinculados a um serviço (M2M). undefined = não mexe.
 const syncServiceAttendants = async (
@@ -34,6 +35,7 @@ export const getServicesByCompanyId = async (companyId: string) => {
  * services a given attendant offers.
  */
 export const getPublicServicesByCompanyId = async (companyId: string) => {
+  await assertCompanyBookable(companyId);
   const rows = await prisma.service.findMany({
     where: { company_id: companyId, is_active: true },
     orderBy: { name: "asc" },

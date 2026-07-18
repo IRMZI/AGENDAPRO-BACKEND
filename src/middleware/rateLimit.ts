@@ -71,6 +71,17 @@ export const publicReadLimiter = rateLimit({
   max: 90,
 });
 
+// Cadastro do teste grátis: cria User + Company de verdade, então é bem mais
+// apertado que o publicWriteLimiter (30/min deixaria 30 empresas/min por IP com
+// emails descartáveis). O dedup só barra repetição da MESMA identidade — não
+// enumeração. Limite generoso o bastante p/ erro honesto + reenvio de link.
+export const trialSignupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message:
+    "Muitas tentativas de cadastro. Aguarde alguns minutos e tente novamente.",
+});
+
 // Image uploads are authed but still capped so a compromised token can't spam
 // the bucket. Generous enough for editing a profile + a batch of services.
 export const uploadLimiter = rateLimit({

@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { assertCompanyBookable } from "./companyService.js";
 
 type AvailabilityRequest = {
   companyId: string;
@@ -22,6 +23,7 @@ export const getAvailability = async ({
   date,
   serviceId,
 }: AvailabilityRequest): Promise<AvailabilityResponse> => {
+  await assertCompanyBookable(companyId);
   const targetDate = new Date(date);
   const weekday = targetDate.getDay();
 
@@ -164,6 +166,7 @@ export const suggestAttendantsForDay = async (
   date: string,
   serviceId?: string,
 ) => {
+  await assertCompanyBookable(companyId);
   const targetDate = new Date(date);
   const weekday = targetDate.getDay();
 

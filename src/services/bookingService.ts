@@ -1,6 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { sendEmail } from "./emailService.js";
-import { getCompanyById } from "./companyService.js";
+import { assertCompanyBookable, getCompanyById } from "./companyService.js";
 import { recordBookingFinancials } from "./financialService.js";
 import { getBrandName } from "./tenantService.js";
 import {
@@ -71,19 +71,9 @@ export const createBooking = async (booking: any) => {
     throw new Error("company_id is required");
   }
 
-  const company = await prisma.company.findUnique({
-    where: { id: booking.company_id },
-    select: { id: true, is_active: true },
-  });
-
-  // Public endpoint: reject unknown companies (no spamming arbitrary ids) and
-  // inactive accounts.
-  if (!company) {
-    throw new Error("Company not found");
-  }
-  if (!company.is_active) {
-    throw new Error("Company account is inactive. Please contact support.");
-  }
+  // Public endpoint: reject unknown companies (no spamming arbitrary ids),
+  // inactive accounts e trial expirado — regra única em companyService.
+  await assertCompanyBookable(booking.company_id);
 
   const companyId: string = booking.company_id;
 
@@ -347,6 +337,7 @@ export const getAvailableTimeSlots = async (
   serviceId: string,
   totalDurationMinutes?: number, // Novo parâmetro opcional para duração total
 ) => {
+  await assertCompanyBookable(companyId);
   const service = await prisma.service.findUnique({
     where: { id: serviceId },
     select: { duration_minutes: true },

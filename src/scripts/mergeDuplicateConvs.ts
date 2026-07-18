@@ -8,6 +8,7 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
+import { normalizeDigits } from "../lib/phone.js";
 
 const DRY = process.argv.includes("--dry");
 
@@ -16,15 +17,6 @@ const realPhoneFromAltJid = (jid: unknown): string | null => {
     return null;
   const d = (jid.split("@")[0]?.split(":")[0] ?? "").replace(/\D/g, "");
   return d || null;
-};
-
-const normalizeDigits = (s: string | null | undefined): string => {
-  if (!s) return "";
-  let d = s.replace(/\D/g, "");
-  if (!d) return "";
-  if (d.startsWith("55") && d.length >= 12) d = d.slice(2);
-  if (d.length === 11 && d[2] === "9") d = d.slice(0, 2) + d.slice(3);
-  return d.slice(-10);
 };
 
 const isPlaceholder = (n?: string | null) => !!n && /^cliente whatsapp/i.test(n);

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
+import { isDefaultSenderCompany } from "./tenantService.js";
 
 // Categorias suportadas. Hoje só "quick_reply" tem UI; as demais serão usadas
 // pelas automações de agendamento / auto-resposta.
@@ -16,13 +17,43 @@ export const TEMPLATE_CATEGORIES = [
   "booking_status_completed",
   "booking_status_cancelled",
   "booking_status_no_show",
+  // Onboarding do teste grátis — SÓ a empresa remetente default customiza (ver
+  // TRIAL_CATEGORIES). Vivem na empresa operadora; o resto do tempo o fluxo de
+  // trial usa o texto padrão hardcoded do trialService.
+  "trial_welcome",
+  "trial_warning",
+  "trial_expired",
 ] as const;
 export type TemplateCategory = (typeof TEMPLATE_CATEGORIES)[number];
+
+// Categorias de onboarding do trial: gated à empresa de WhatsApp default.
+export const TRIAL_CATEGORIES: readonly TemplateCategory[] = [
+  "trial_welcome",
+  "trial_warning",
+  "trial_expired",
+];
 
 const normCategory = (c: unknown): TemplateCategory =>
   TEMPLATE_CATEGORIES.includes(c as TemplateCategory)
     ? (c as TemplateCategory)
     : "quick_reply";
+
+// Trava as categorias de trial: só a conta de WhatsApp default do tenant pode
+// criar/editar. Nas outras empresas seria dado morto (o fluxo de trial só lê os
+// templates da operadora) — então recusamos com 403.
+const assertMayUseCategory = async (
+  companyId: string,
+  category: TemplateCategory,
+) => {
+  if (!TRIAL_CATEGORIES.includes(category)) return;
+  if (!(await isDefaultSenderCompany(companyId))) {
+    const err: any = new Error(
+      "As mensagens do teste grátis só podem ser editadas pela conta de WhatsApp padrão.",
+    );
+    err.statusCode = 403;
+    throw err;
+  }
+};
 
 export const listTemplates = async (companyId: string, category?: string) => {
   return prisma.messageTemplate.findMany({
@@ -56,11 +87,13 @@ export const createTemplate = async (
     err.statusCode = 400;
     throw err;
   }
+  const category = normCategory(data?.category);
+  await assertMayUseCategory(companyId, category);
   return prisma.messageTemplate.create({
     data: {
       id: randomUUID(),
       company_id: companyId,
-      category: normCategory(data?.category),
+      category,
       title,
       body,
       shortcut: data?.shortcut?.trim() || null,
@@ -74,7 +107,12 @@ export const updateTemplate = async (
   companyId: string,
   data: Record<string, unknown>,
 ) => {
-  await requireOwned(id, companyId);
+  const existing = await requireOwned(id, companyId);
+  // Gate se o template JÁ é de trial (editar texto/ativar) ou se está virando.
+  await assertMayUseCategory(companyId, existing.category as TemplateCategory);
+  if (data?.category !== undefined) {
+    await assertMayUseCategory(companyId, normCategory(data.category));
+  }
   const patch: Record<string, unknown> = { updated_at: new Date() };
   if (data?.title !== undefined) patch.title = String(data.title).trim();
   if (data?.body !== undefined) patch.body = String(data.body);

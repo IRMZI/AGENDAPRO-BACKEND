@@ -8,6 +8,7 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { wahaOrchestrator } from "../lib/wahaOrchestrator.js";
 import { emitToCompany } from "../lib/realtime.js";
+import { normalizeDigits } from "../lib/phone.js";
 import { mapWahaStatus } from "./whatsappService.js";
 
 // ============================================================
@@ -1040,22 +1041,6 @@ export const processWebhookEvent = async (
 // ============================================================
 // Chat REST API
 // ============================================================
-
-// Chave canônica p/ COMPARAR telefones — tolerante ao 9º dígito do Brasil.
-// Celular BR = 55 + DDD + 9 + 8 díg, mas o WhatsApp guarda muitos números SEM
-// o 9 (legado). Então normalizamos: tira o DDI 55, tira o 9 do celular e fica
-// com "DDD + 8 dígitos". Assim "51980276600", "555180276600" e "5551980276600"
-// viram todos "5180276600" e casam entre si.
-const normalizeDigits = (s: string | null | undefined): string => {
-  if (!s) return "";
-  let d = s.replace(/\D/g, "");
-  if (!d) return "";
-  // Tira o código do país (55) quando claramente é DDI (>= 12 díg).
-  if (d.startsWith("55") && d.length >= 12) d = d.slice(2);
-  // Celular BR com 9º dígito: DDD(2) + 9 + 8 = 11 díg → remove o 9.
-  if (d.length === 11 && d[2] === "9") d = d.slice(0, 2) + d.slice(3);
-  return d.slice(-10);
-};
 
 interface LinkedClientPreview {
   id: string;

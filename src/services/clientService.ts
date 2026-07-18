@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { assertCompanyBookable } from "./companyService.js";
 
 export const getClientsByCompanyId = async (companyId: string) => {
   return prisma.client.findMany({
@@ -25,15 +26,7 @@ export const upsertClient = async (data: any) => {
 };
 
 export const upsertClientPublic = async (data: any) => {
-  const company = await prisma.company.findUnique({
-    where: { id: data.company_id },
-    select: { is_active: true },
-  });
-
-  if (!company?.is_active) {
-    throw new Error("Company account is inactive. Please contact support.");
-  }
-
+  await assertCompanyBookable(data?.company_id);
   return upsertClient(data);
 };
 

@@ -88,7 +88,19 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
 // Middleware para capturar erros não tratados
 export const errorHandler = (error: any, req: Request, res: Response, next: NextFunction) => {
   const requestId = req.requestId || 'unknown';
-  
+
+  // Erros ESPERADOS carregam status (ex.: CompanyAccessError, 403 de empresa
+  // inativa). Não são falha de servidor: respondem o status certo e não poluem
+  // o log de erro — só um 500 genérico é incidente de verdade.
+  const status = Number(error?.status);
+  if (status >= 400 && status < 500) {
+    if (res.headersSent) return next(error);
+    return res.status(status).json({
+      error: error.message,
+      ...(error.code ? { code: error.code } : {}),
+    });
+  }
+
   console.error(`[REQ_${requestId}] 💥 ERRO NÃO TRATADO:`, {
     timestamp: new Date().toISOString(),
     error: {
@@ -116,6 +128,21 @@ export const errorHandler = (error: any, req: Request, res: Response, next: Next
     requestId,
     timestamp: new Date().toISOString(),
     details: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+  });
+};
+
+/**
+ * Resposta de erro que respeita `error.status` quando o erro é esperado (ex.:
+ * CompanyAccessError 403/404 da superfície pública) e cai no fallback quando é
+ * falha real. Usar nos handlers públicos, que antes fixavam 500 e por isso
+ * transformavam "empresa expirada" em erro de servidor.
+ */
+export const respondWithError = (res: Response, error: any, fallback = 500) => {
+  const status = Number(error?.status);
+  const known = status >= 400 && status < 500;
+  return res.status(known ? status : fallback).json({
+    error: error?.message ?? "Erro inesperado",
+    ...(error?.code ? { code: error.code } : {}),
   });
 };
 

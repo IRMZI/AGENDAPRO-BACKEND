@@ -25,6 +25,7 @@ import {
 } from "../controllers/authController.js";
 import {
   requireAuth,
+  requireActiveCompany,
   requireRole,
   requireCompanyAccess,
   requireSelfUserParam,
@@ -34,8 +35,15 @@ import {
   authLimiter,
   publicWriteLimiter,
   publicReadLimiter,
+  trialSignupLimiter,
   uploadLimiter,
 } from "../middleware/rateLimit.js";
+import {
+  trialResendLinkHandler,
+  trialSenderConfigHandler,
+  trialSignupHandler,
+  trialStatusHandler,
+} from "../controllers/trialController.js";
 import {
   ownsBooking,
   ownsAttendant,
@@ -214,6 +222,24 @@ import {
 
 const router = Router();
 
+// ============================================================================
+// Guards compartilhados
+// ============================================================================
+// REGRA: toda rota autenticada da empresa usa `authed` (= requireAuth +
+// requireActiveCompany), para que teste expirado / conta suspensa não consiga
+// mais operar a API — antes o bloqueio era só um modal no Dashboard.
+//
+// ISENÇÕES (usam requireAuth puro), senão o bloqueado não consegue nem ver a
+// tela de "teste encerrado" nem voltar a pagar:
+//   - GET /auth/me                      → o app inicializa a identidade por aqui
+//   - GET /companies/user/:userId(+/active) e /permissions → bootstrap do AppData
+//   - GET /trial/status                 → é a fonte da própria tela de bloqueio
+//   - /push/public-key e /push/unsubscribe
+//   - (futuro) POST /billing/checkout   → pagar PRECISA funcionar bloqueado
+// Rotas de /auth/* e as de requireInternalSecret já são isentas por construção
+// (não passam por requireAuth), então o operador sempre consegue reativar.
+const authed = [requireAuth, requireActiveCompany] as const;
+
 // Image uploads: in-memory multipart parsing (streamed straight to the bucket),
 // 5MB cap, image types only. Multer errors are translated to a clean 400 by the
 // wrapper below instead of falling through to the generic 500 handler.
@@ -245,7 +271,7 @@ const singleImage = (req: Request, res: Response, next: NextFunction) => {
 router.get("/health", healthCheck);
 
 // Authenticated image upload (owner or logged-in attendant) → { url }.
-router.post("/uploads", requireAuth, uploadLimiter, singleImage, uploadImageHandler);
+router.post("/uploads", ...authed, uploadLimiter, singleImage, uploadImageHandler);
 
 router.post("/auth/signup", authLimiter, signUpHandler);
 router.post("/auth/login", authLimiter, signInHandler);
@@ -253,12 +279,13 @@ router.post("/auth/refresh", authLimiter, refreshHandler);
 router.post("/auth/logout", logoutHandler);
 // Public: attendant sets their password from a one-time invite token, then is logged in.
 router.post("/auth/set-password", authLimiter, setPasswordHandler);
+// ISENTA: o app resolve a identidade por aqui. Bloquear = loop de login.
 router.get("/auth/me", requireAuth, meHandler);
 
 // Sending email is an authenticated, admin-only action — never an open relay.
 router.post(
   "/emails/send",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   publicWriteLimiter,
   sendEmailHandler,
@@ -275,43 +302,59 @@ router.post("/preonboarding/use", publicWriteLimiter, useTokenHandler);
 router.get("/preonboarding/token/:token", getPreOnboardingByTokenHandler);
 router.get(
   "/preonboarding",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   getAllPreOnboardingsHandler,
 );
 router.post("/preonboarding", publicWriteLimiter, createPreOnboardingHandler);
 router.patch(
   "/preonboarding/:id",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   updatePreOnboardingHandler,
 );
 router.delete(
   "/preonboarding/:id",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   deletePreOnboardingHandler,
 );
 
+// ============================================================================
+// Teste grátis self-service (landing page → company com 7 dias)
+// ============================================================================
+// Público: cria User + Company de verdade → limiter próprio, bem mais apertado
+// que o publicWriteLimiter. O link de acesso sai por WhatsApp (nunca na
+// resposta), o que verifica o número implicitamente.
+router.post("/trial/signup", trialSignupLimiter, trialSignupHandler);
+// Recuperação do link ("não chegou" / token queimado). Resposta genérica.
+router.post("/trial/resend-link", trialSignupLimiter, trialResendLinkHandler);
+// ISENTA do requireActiveCompany: alimenta a tela de "teste encerrado".
+router.get("/trial/status", requireAuth, trialStatusHandler);
+// A company do caller é a conta de WhatsApp default? (mostra a edição das
+// mensagens de onboarding). Passa pelo guard normal — só interessa a empresas
+// ativas de qualquer forma.
+router.get("/trial/sender-config", ...authed, trialSenderConfigHandler);
+
 // Leads
 router.post("/leads", publicWriteLimiter, createLeadHandler);
-router.get("/leads", requireAuth, requireRole("admin"), getLeadsHandler);
+router.get("/leads", ...authed, requireRole("admin"), getLeadsHandler);
 
 // Tenants (White-Label Products)
 router.get("/tenants", getAllTenantsHandler);
 router.get("/tenants/slug/:slug", getTenantBySlugHandler);
 router.get("/tenants/domain/:domain", getTenantByDomainHandler);
 router.get("/tenants/:id", getTenantByIdHandler);
-router.post("/tenants", requireAuth, requireRole("admin"), createTenantHandler);
+router.post("/tenants", ...authed, requireRole("admin"), createTenantHandler);
 router.put(
   "/tenants/:id",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   updateTenantHandler,
 );
 router.delete(
   "/tenants/:id",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   deleteTenantHandler,
 );
@@ -319,8 +362,10 @@ router.delete(
 router.post("/tenants/seed", requireInternalSecret, seedTenantsHandler);
 
 // Companies
-router.post("/companies", requireAuth, createCompanyHandler);
+router.post("/companies", ...authed, createCompanyHandler);
 router.get(
+  // ISENTA: o AppDataContext carrega a empresa por aqui — a tela de "teste
+  // encerrado" precisa do nome/id dela pra renderizar.
   "/companies/user/:userId",
   requireAuth,
   requireSelfUserParam,
@@ -330,6 +375,7 @@ router.get("/companies/:companyId", getCompanyByIdHandler);
 // Module permissions (feature flags) per company.
 // Read: the company's own app reads these to gate modules.
 router.get(
+  // ISENTA: bootstrap do AppData (flags de módulo).
   "/companies/:companyId/permissions",
   requireAuth,
   requireCompanyAccess,
@@ -344,19 +390,21 @@ router.patch(
 );
 router.patch(
   "/companies/:companyId/services",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   updateCompanyServicesHandler,
 );
 router.patch(
   "/companies/:companyId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   updateCompanyHandler,
 );
 router.get(
+  // ISENTA: é justamente a sonda de "minha conta está ativa?" — bloquear ela
+  // faria o Dashboard nunca conseguir descobrir que está bloqueado.
   "/companies/user/:userId/active",
   requireAuth,
   requireSelfUserParam,
@@ -367,7 +415,7 @@ router.get(
 router.post("/bookings", publicWriteLimiter, createBookingHandler);
 router.get(
   "/bookings/company/:companyId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   getBookingsByCompanyHandler,
@@ -376,7 +424,7 @@ router.get(
 // (read-only for attendants; writes below are still scoped to their own).
 router.get(
   "/bookings/company/:companyId/range",
-  requireAuth,
+  ...authed,
   requireCompanyAccess,
   getBookingsByDateRangeHandler,
 );
@@ -386,14 +434,14 @@ router.get(
 );
 router.patch(
   "/bookings/:bookingId/status",
-  requireAuth,
+  ...authed,
   ownsBooking,
   restrictBookingToOwnAttendant,
   updateBookingStatusHandler,
 );
 router.patch(
   "/bookings/:bookingId/archive",
-  requireAuth,
+  ...authed,
   ownsBooking,
   restrictBookingToOwnAttendant,
   archiveBookingHandler,
@@ -401,14 +449,14 @@ router.patch(
 // Edit / delete a booking (own-only for attendants; any for owner).
 router.patch(
   "/bookings/:bookingId",
-  requireAuth,
+  ...authed,
   ownsBooking,
   restrictBookingToOwnAttendant,
   updateBookingHandler,
 );
 router.delete(
   "/bookings/:bookingId",
-  requireAuth,
+  ...authed,
   ownsBooking,
   restrictBookingToOwnAttendant,
   deleteBookingHandler,
@@ -419,7 +467,7 @@ router.delete(
 // all mutations below remain admin-only.
 router.get(
   "/attendants/company/:companyId",
-  requireAuth,
+  ...authed,
   requireCompanyAccess,
   getAttendantsByCompanyHandler,
 );
@@ -430,27 +478,27 @@ router.get(
   getPublicAttendantsByCompanyHandler,
 );
 // Attendant fetches only their own record (no roster exposure).
-router.get("/attendants/me", requireAuth, getMyAttendantHandler);
+router.get("/attendants/me", ...authed, getMyAttendantHandler);
 // Attendant self-service: edit own public profile (photo + social links).
 // Must stay above "/attendants/:attendantId" so "me" isn't read as an id.
-router.patch("/attendants/me", requireAuth, updateMyAttendantHandler);
+router.patch("/attendants/me", ...authed, updateMyAttendantHandler);
 router.post(
   "/attendants",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   createAttendantHandler,
 );
 router.patch(
   "/attendants/:attendantId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendant,
   updateAttendantHandler,
 );
 router.delete(
   "/attendants/:attendantId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendant,
   deleteAttendantHandler,
@@ -458,14 +506,14 @@ router.delete(
 // Owner enables/disables a per-attendant login (sends a set-password invite).
 router.post(
   "/attendants/:attendantId/enable-login",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendant,
   enableAttendantLoginHandler,
 );
 router.post(
   "/attendants/:attendantId/disable-login",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendant,
   disableAttendantLoginHandler,
@@ -477,7 +525,7 @@ router.get("/plans", getPlansHandler);
 router.get("/plans/:planId", getPlanByIdHandler);
 router.get(
   "/services/company/:companyId",
-  requireAuth,
+  ...authed,
   requireCompanyAccess,
   getServicesByCompanyHandler,
 );
@@ -489,21 +537,21 @@ router.get(
 );
 router.post(
   "/services",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   createServiceHandler,
 );
 router.patch(
   "/services/:serviceId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsService,
   updateServiceHandler,
 );
 router.delete(
   "/services/:serviceId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsService,
   deleteServiceHandler,
@@ -512,27 +560,27 @@ router.delete(
 // Business hours and weekdays
 router.get(
   "/business-hours/company/:companyId",
-  requireAuth,
+  ...authed,
   requireCompanyAccess,
   getCompanyBusinessHoursHandler,
 );
 router.put(
   "/business-hours",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   upsertCompanyBusinessHoursHandler,
 );
 router.get(
   "/attendants/:attendantId/weekdays",
-  requireAuth,
+  ...authed,
   ownsAttendant,
   requireOwnAttendantParam,
   getAttendantWeekdaysHandler,
 );
 router.put(
   "/attendant-weekdays",
-  requireAuth,
+  ...authed,
   ownsAttendantByBody,
   requireOwnAttendantBody,
   upsertAttendantWeekdayHandler,
@@ -541,7 +589,7 @@ router.put(
 // Attendant links/banners
 router.get(
   "/attendants/:attendantId/links",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendant,
   getAttendantLinksHandler,
@@ -549,28 +597,28 @@ router.get(
 router.get("/attendants/:attendantId/link", getAttendantLinkHandler);
 router.post(
   "/attendants/links",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendantByBody,
   createAttendantLinkHandler,
 );
 router.patch(
   "/attendants/links/:linkId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendantLink,
   updateAttendantLinkHandler,
 );
 router.delete(
   "/attendants/links/:linkId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendantLink,
   deleteAttendantLinkHandler,
 );
 router.put(
   "/attendants/links",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendantByBody,
   upsertAttendantLinkHandler,
@@ -578,35 +626,35 @@ router.put(
 
 router.get(
   "/attendants/:attendantId/banner",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendant,
   getAttendantBannerHandler,
 );
 router.post(
   "/attendants/banners",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendantByBody,
   createAttendantBannerHandler,
 );
 router.patch(
   "/attendants/banners/:bannerId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendantBanner,
   updateAttendantBannerHandler,
 );
 router.delete(
   "/attendants/banners/:bannerId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendantBanner,
   deleteAttendantBannerHandler,
 );
 router.put(
   "/attendants/banners",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsAttendantByBody,
   upsertAttendantBannerHandler,
@@ -615,14 +663,14 @@ router.put(
 // Clients
 router.get(
   "/clients/company/:companyId",
-  requireAuth,
+  ...authed,
   requireCompanyAccess,
   getClientsByCompanyHandler,
 );
-router.post("/clients", requireAuth, requireCompanyAccess, createClientHandler);
+router.post("/clients", ...authed, requireCompanyAccess, createClientHandler);
 router.post(
   "/clients/upsert",
-  requireAuth,
+  ...authed,
   requireCompanyAccess,
   upsertClientHandler,
 );
@@ -630,19 +678,19 @@ router.post("/clients/upsert-public", publicWriteLimiter, upsertClientPublicHand
 // Client maintenance is available to attendants too (own-company scoped).
 router.patch(
   "/clients/:clientId",
-  requireAuth,
+  ...authed,
   ownsClient,
   updateClientHandler,
 );
 router.delete(
   "/clients/:clientId",
-  requireAuth,
+  ...authed,
   ownsClient,
   deleteClientHandler,
 );
 router.get(
   "/clients/:clientId/bookings",
-  requireAuth,
+  ...authed,
   ownsClient,
   getClientBookingsHandler,
 );
@@ -650,28 +698,28 @@ router.get(
 // Service plans
 router.get(
   "/service-plans/company/:companyId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   getServicePlansByCompanyHandler,
 );
 router.post(
   "/service-plans",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   createServicePlanHandler,
 );
 router.patch(
   "/service-plans/:planId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsServicePlan,
   updateServicePlanHandler,
 );
 router.delete(
   "/service-plans/:planId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsServicePlan,
   deleteServicePlanHandler,
@@ -680,42 +728,42 @@ router.delete(
 // Subscriptions
 router.get(
   "/subscriptions/client/:clientId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsClient,
   getClientSubscriptionsHandler,
 );
 router.get(
   "/subscriptions/company/:companyId/active",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   getActiveSubscriptionsByCompanyHandler,
 );
 router.post(
   "/subscriptions",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   createClientSubscriptionHandler,
 );
 router.patch(
   "/subscriptions/:subscriptionId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsSubscription,
   updateClientSubscriptionHandler,
 );
 router.post(
   "/subscriptions/process-booking",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   processBookingCompletionHandler,
 );
 router.get(
   "/subscriptions/:subscriptionId/summary",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsSubscription,
   getSubscriptionSummaryHandler,
@@ -724,64 +772,64 @@ router.get(
 // Subscription sessions
 router.get(
   "/subscription-sessions/subscription/:subscriptionId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsSubscription,
   getSubscriptionSessionsHandler,
 );
 router.post(
   "/subscription-sessions",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   createSubscriptionSessionHandler,
 );
 router.patch(
   "/subscription-sessions/:sessionId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsSubscriptionSession,
   updateSubscriptionSessionHandler,
 );
 router.post(
   "/subscription-sessions/:sessionId/complete",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsSubscriptionSession,
   markSessionAsCompletedHandler,
 );
 router.post(
   "/subscription-sessions/:sessionId/schedule",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsSubscriptionSession,
   scheduleSessionHandler,
 );
 router.get(
   "/subscription-sessions/company/:companyId/with-bookings",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   requireCompanyAccess,
   getSessionsWithBookingsHandler,
 );
 router.patch(
   "/subscription-sessions/:sessionId/status",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsSubscriptionSession,
   updateSessionStatusHandler,
 );
 router.patch(
   "/subscription-sessions/:sessionId/archive",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   ownsSubscriptionSession,
   archiveSessionHandler,
 );
 
 // WhatsApp - multi-session por empresa via WahaOrchestrator
-router.get("/whatsapp", requireAuth, requireRole("admin"), listSessionsHandler);
-router.post("/whatsapp", requireAuth, requireRole("admin"), createSessionHandler);
+router.get("/whatsapp", ...authed, requireRole("admin"), listSessionsHandler);
+router.post("/whatsapp", ...authed, requireRole("admin"), createSessionHandler);
 
 // Webhook recebido dos workers WAHA (sem JWT - valida secret)
 router.post("/whatsapp/webhook/:wahaSessionId", webhookHandler);
@@ -789,28 +837,28 @@ router.post("/whatsapp/webhook/:wahaSessionId", webhookHandler);
 // Configuração do lembrete de agendamento (horas antes)
 router.patch(
   "/whatsapp/reminder-settings",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   updateReminderSettingsHandler,
 );
 
 // Sessions
-router.get("/whatsapp/:id/qr", requireAuth, requireRole("admin"), sessionQrHandler);
+router.get("/whatsapp/:id/qr", ...authed, requireRole("admin"), sessionQrHandler);
 router.get(
   "/whatsapp/:id/status",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   sessionStatusHandler,
 );
 router.post(
   "/whatsapp/:id/disconnect",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   sessionDisconnectHandler,
 );
 router.post(
   "/whatsapp/:id/send",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   sessionSendHandler,
 );
@@ -818,67 +866,67 @@ router.post(
 // Chat (conversas + mensagens)
 router.get(
   "/whatsapp/client-links",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   clientWhatsappLinksHandler,
 );
 router.get(
   "/whatsapp/conversations",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   listConversationsHandler,
 );
 router.get(
   "/whatsapp/conversations/:convId/messages",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   listMessagesHandler,
 );
 router.post(
   "/whatsapp/conversations/:convId/send",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   sendMessageHandler,
 );
 router.post(
   "/whatsapp/conversations/:convId/seen",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   markSeenHandler,
 );
 router.post(
   "/whatsapp/conversations/:convId/create-client",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   createClientFromConversationHandler,
 );
 router.patch(
   "/whatsapp/conversations/:convId/contact",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   updateContactNameHandler,
 );
 router.get(
   "/whatsapp/conversations/:convId/bookings",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   conversationBookingsHandler,
 );
 router.patch(
   "/whatsapp/conversations/:convId/link-client",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   linkClientHandler,
 );
 router.post(
   "/whatsapp/conversations/:convId/react",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   reactMessageHandler,
 );
 router.delete(
   "/whatsapp/conversations/:convId",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   deleteConversationHandler,
 );
@@ -886,25 +934,25 @@ router.delete(
 // Respostas rápidas / templates de mensagem (company-scoped)
 router.get(
   "/message-templates",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   listTemplatesHandler,
 );
 router.post(
   "/message-templates",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   createTemplateHandler,
 );
 router.patch(
   "/message-templates/:id",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   updateTemplateHandler,
 );
 router.delete(
   "/message-templates/:id",
-  requireAuth,
+  ...authed,
   requireRole("admin"),
   deleteTemplateHandler,
 );
@@ -912,7 +960,12 @@ router.delete(
 // ============================================================================
 // Financial module (admin-only, company-scoped)
 // ============================================================================
-const fin = [requireAuth, requireRole("admin"), requireCompanyAccess] as const;
+const fin = [
+  requireAuth,
+  requireActiveCompany,
+  requireRole("admin"),
+  requireCompanyAccess,
+] as const;
 
 router.get("/financial/summary/:companyId", ...fin, getSummaryHandler);
 router.get("/financial/reports/:companyId", ...fin, getReportsHandler);
@@ -949,16 +1002,18 @@ router.get("/financial/payouts/:companyId", ...fin, listPayoutsHandler);
 // AI assistant (Groq) — owner-only; company derived from the token; tools are
 // company-scoped. A 15s per-company cooldown is enforced inside the handler.
 // ============================================================================
-router.post("/ai/chat", requireAuth, requireRole("admin"), aiChatHandler);
+router.post("/ai/chat", ...authed, requireRole("admin"), aiChatHandler);
 
 // ============================================================================
 // Web Push (PWA) — inscrição de notificações por usuário autenticado.
 // A chave pública VAPID é servida pelo backend p/ o frontend não precisar de
 // rebuild ao rotacionar a chave. Todas as rotas exigem login.
 // ============================================================================
+// ISENTAS: a chave pública é inócua e cancelar inscrição tem que funcionar
+// sempre (inclusive p/ parar de notificar uma conta bloqueada).
 router.get("/push/public-key", requireAuth, getPublicKeyHandler);
-router.post("/push/subscribe", requireAuth, subscribeHandler);
 router.post("/push/unsubscribe", requireAuth, unsubscribeHandler);
-router.post("/push/test", requireAuth, testPushHandler);
+router.post("/push/subscribe", ...authed, subscribeHandler);
+router.post("/push/test", ...authed, testPushHandler);
 
 export default router;

@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import type { AuthenticatedRequest } from "../middleware/auth.js";
+import { respondWithError } from "../middleware/logging.js";
 import {
   createAttendant,
   deleteAttendant,
@@ -36,7 +37,8 @@ export const getPublicAttendantsByCompanyHandler = async (
     const result = await getPublicAttendantsByCompanyId(companyId);
     return res.status(200).json({ data: result });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    // Empresa inativa/expirada → 403 (não 500): é estado esperado.
+    return respondWithError(res, error);
   }
 };
 
@@ -141,6 +143,6 @@ export const getAttendantByUsernameHandler = async (
     const result = await getAttendantByUsername(companyId, username);
     return res.status(200).json({ data: result });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    return respondWithError(res, error);
   }
 };

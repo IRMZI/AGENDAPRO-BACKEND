@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { respondWithError } from "../middleware/logging.js";
 import {
   createService,
   deleteService,
@@ -32,7 +33,8 @@ export const getPublicServicesByCompanyHandler = async (
     const result = await getPublicServicesByCompanyId(companyId);
     return res.status(200).json({ data: result });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    // Empresa inativa/expirada → 403 (não 500): é estado esperado.
+    return respondWithError(res, error);
   }
 };
 

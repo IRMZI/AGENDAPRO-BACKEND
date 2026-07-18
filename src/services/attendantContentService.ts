@@ -1,4 +1,5 @@
 import { prisma } from "../lib/prisma.js";
+import { isBookable } from "./companyService.js";
 
 export const getAttendantLinks = async (attendantId: string) => {
   return prisma.attendantLink.findMany({
@@ -7,7 +8,18 @@ export const getAttendantLinks = async (attendantId: string) => {
   });
 };
 
+// Rota PÚBLICA (`GET /attendants/:id/link`, sem auth) — some junto com o resto
+// da vitrine quando a empresa está suspensa/expirada. Devolve null em vez de
+// lançar: o handler já trata "sem link" e a UI não quebra.
 export const getAttendantLink = async (attendantId: string) => {
+  const attendant = await prisma.attendant.findUnique({
+    where: { id: attendantId },
+    select: {
+      company: { select: { is_active: true, subscription_status: true } },
+    },
+  });
+  if (!isBookable(attendant?.company)) return null;
+
   return prisma.attendantLink.findFirst({
     where: { attendant_id: attendantId, is_active: true },
     orderBy: { display_order: "asc" },

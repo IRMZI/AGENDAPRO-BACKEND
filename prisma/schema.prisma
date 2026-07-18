@@ -37,6 +37,16 @@ model Tenant {
   created_at       DateTime        @default(now())
   updated_at       DateTime        @default(now())
   domains          String[]        @default([])
+  // Empresa OPERADORA do tenant: é a dona da conexão de WhatsApp que envia as
+  // mensagens de onboarding do teste grátis (boas-vindas/aviso/expiração).
+  // Coluna ESCALAR de propósito — sem relation Prisma e sem FK no banco.
+  // Company.tenant_id → Tenant já existe; uma relation de volta criaria ciclo e
+  // obrigaria a renomear a relation existente numa base viva. Mesmo precedente
+  // dos modelos do financeiro. Resolver com findUnique explícito.
+  onboarding_company_id String?    @db.Uuid
+  // Host do app deste tenant (base do link mágico). Sem isto, cai no FRONTEND_URL.
+  // NÃO derivar de `domains`/`website_url`: no mbc eles são o site de marketing.
+  app_url          String?
   companies        Company[]
   preonboardings   PreOnboarding[]
 
@@ -67,6 +77,23 @@ model Company {
   features                         Json?
   primary_phone                    String?
   first_login_completed            Boolean                            @default(false)
+  // ── Assinatura da EMPRESA no SaaS (não confundir com ClientSubscription,
+  // que é a assinatura das clientes DO salão). Semântica: `subscription_status`
+  // é a fonte da verdade; `is_active` é o flag mecânico já checado no código
+  // público. Escreva os dois SOMENTE via companyService.setCompanyAccess.
+  // Invariante: is_active=false + subscription_status='active' ≡ suspensão
+  // manual do operador (≠ trial expirado).
+  subscription_status              String                             @default("active") // trialing|active|expired|blocked
+  trial_started_at                 DateTime?
+  trial_ends_at                    DateTime?
+  trial_warning_sent_at            DateTime?
+  signup_source                    String?                            // ex.: "landing_trial"
+  signup_link_delivery             String?                            // whatsapp|email|failed
+  // Anti-abuso do teste grátis: chaves normalizadas do cadastro. Únicas, mas
+  // anuláveis — no Postgres NULL é distinto, então empresas antigas (NULL)
+  // nunca conflitam e o índice só vale para cadastros vindos da landing.
+  signup_email_key                 String?                            @unique
+  signup_phone_key                 String?                            @unique
   created_at                       DateTime                           @default(now())
   updated_at                       DateTime                           @default(now())
   theme_accent                     String?
@@ -95,6 +122,8 @@ model Company {
   whatsapp_sessions     WhatsappSession[]
   message_templates     MessageTemplate[]
 
+  // Varredura do scheduler de trial (só empresas em teste).
+  @@index([subscription_status, trial_ends_at])
   @@map("app_fd14ee28a1_companies")
 }
 
@@ -444,6 +473,11 @@ model User {
   id             String          @id @default(uuid()) @db.Uuid
   email          String          @unique
   password_hash  String
+  // Link mágico do DONO (espelha Attendant.invite_token): o cadastro self-service
+  // da landing cria o usuário sem senha utilizável e manda este token por
+  // WhatsApp. Uso único — zerado ao definir a senha.
+  setup_token            String?  @unique
+  setup_token_expires_at DateTime?
   created_at     DateTime        @default(now())
   updated_at     DateTime        @default(now())
   attendants     Attendant[]

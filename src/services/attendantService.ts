@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma.js";
+import { assertCompanyBookable } from "./companyService.js";
 import { sendEmail } from "./emailService.js";
 import { getBrandName } from "./tenantService.js";
 
@@ -40,6 +41,7 @@ export const getAttendantsByCompanyId = async (companyId: string) => {
  * page can render avatars + social buttons per attendant.
  */
 export const getPublicAttendantsByCompanyId = async (companyId: string) => {
+  await assertCompanyBookable(companyId);
   return prisma.attendant.findMany({
     where: { company_id: companyId, is_active: true },
     orderBy: { name: "asc" },
@@ -199,6 +201,7 @@ export const getAttendantByUsername = async (
   // Public endpoint (used by the booking pages). Return ONLY display-safe
   // fields — never invite_token, user_id, email/phone or commission data,
   // which would enable account takeover / PII harvesting.
+  await assertCompanyBookable(companyId);
   return prisma.attendant.findFirst({
     where: { company_id: companyId, username },
     select: {
