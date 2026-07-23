@@ -180,6 +180,14 @@ export const wahaOrchestrator = {
       `/sessions/${sessionId}/groups/${encodeURIComponent(groupId)}/metadata`,
     ),
 
+  // Verifica se um número está no WhatsApp e resolve o chatId CANÔNICO (cuida do
+  // 9º dígito BR). WAHA: GET /api/contacts/check-exists.
+  checkNumber: (sessionId: string, phone: string) =>
+    call<{ exists: boolean; chatId: string }>(
+      "GET",
+      `/sessions/${sessionId}/checkNumber/${encodeURIComponent(phone)}`,
+    ),
+
   // Baixa a mídia de uma mensagem direto pela URL do worker (que o webhook
   // manda em `media.url`, apontando p/ localhost do worker). Retorna base64.
   proxyMedia: (sessionId: string, mediaUrl: string) =>

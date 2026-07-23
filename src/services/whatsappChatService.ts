@@ -36,13 +36,38 @@ const realPhoneFromAltJid = (jid: string | null | undefined): string | null => {
   return digits || null;
 };
 
-// Monta o jid @c.us de um telefone, garantindo o DDI 55 quando parece número
-// nacional (DDD + número, 10 ou 11 díg). Sem o 55, o WhatsApp não resolve o LID
+// Garante o DDI 55 quando o número parece nacional (DDD + número, 10 ou 11 díg).
+const ensureBr55 = (phone: string): string => {
+  const d = (phone || "").replace(/\D/g, "");
+  if (!d.startsWith("55") && (d.length === 10 || d.length === 11)) return `55${d}`;
+  return d;
+};
+
+// Monta o jid @c.us de um telefone. Sem o 55, o WhatsApp não resolve o LID
 // ("no LID found for 51980276600@s.whatsapp.net").
-const toContactJid = (phone: string): string => {
-  let d = (phone || "").replace(/\D/g, "");
-  if (!d.startsWith("55") && (d.length === 10 || d.length === 11)) d = `55${d}`;
-  return `${d}@c.us`;
+const toContactJid = (phone: string): string => `${ensureBr55(phone)}@c.us`;
+
+// Resolve o jid CANÔNICO do número no WhatsApp via check-exists. O WAHA devolve
+// o chatId REAL, cuidando da ambiguidade do 9º dígito BR: um número pode estar
+// registrado no WhatsApp SEM o 9 mesmo tendo o 9 no telefone — mandar
+// `${digits}@c.us` na unha nesse caso NÃO entrega (o "enviou mas não chegou").
+// Retorna: o chatId resolvido se existe; null se NÃO está no WhatsApp (o caller
+// cai pro fallback, ex.: e-mail); ou o jid ingênuo se o check falhar (não piora
+// o comportamento atual).
+const resolveWhatsappChatId = async (
+  wahaSessionId: string,
+  phone: string,
+): Promise<string | null> => {
+  const e164 = ensureBr55(phone);
+  try {
+    const r = await wahaOrchestrator.checkNumber(wahaSessionId, e164);
+    if (r?.exists && r.chatId) return r.chatId;
+    if (r && r.exists === false) return null; // número não está no WhatsApp
+  } catch {
+    // check-exists indisponível (worker/engine): cai no jid ingênuo p/ não
+    // bloquear o envio — comportamento anterior.
+  }
+  return `${e164}@c.us`;
 };
 
 // Identifica a conversa: para inbound usamos `from`, para outbound `to`.
@@ -462,9 +487,21 @@ export const sendAutomatedMessageToPhone = async (
       ) as ConvLite | undefined) ?? null;
   }
 
+  // Número novo (sem conversa): resolve o jid CANÔNICO no WhatsApp antes de
+  // enviar. Sem isso, `${digits}@c.us` cru pode não entregar quando o número
+  // está registrado sem o 9º dígito — a mensagem "envia" mas nunca chega (bug do
+  // trial). Se o número NÃO está no WhatsApp, aborta (o caller cai pro e-mail).
+  let targetChatId: string;
+  if (conversation) {
+    targetChatId = conversation.wa_chat_id;
+  } else {
+    const resolved = await resolveWhatsappChatId(session.waha_session_id, digits);
+    if (!resolved) return { sent: false, reason: "not_on_whatsapp" };
+    targetChatId = resolved;
+  }
+
   // Envia ANTES de persistir/criar conversa: se o envio falhar, nada de
   // conversa-fantasma vazia no inbox.
-  const targetChatId = conversation?.wa_chat_id ?? toContactJid(digits);
   await wahaOrchestrator.sendText(session.waha_session_id, targetChatId, body);
 
   // Número novo (sem conversa): só agora cria contato + conversa.
