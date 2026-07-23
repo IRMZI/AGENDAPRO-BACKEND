@@ -49,3 +49,35 @@ export const isValidBrMobile = (raw: string | null | undefined): boolean => {
   if (subscriber.length === 9) return subscriber[0] === "9";
   return /^[6-9]/.test(subscriber);
 };
+
+/**
+ * Canonicaliza um telefone para ARMAZENAR (par do `normalizeDigits`, que é a
+ * chave de COMPARAÇÃO). Portado do WB (`formatBrazilianNumber`): garante o DDI
+ * 55 e injeta o 9º dígito em celular BR legado de 8 díg, deixando o número numa
+ * forma estável ("55" + DDD + 9 + 8). Assim o telefone salvo no contato não
+ * varia entre "5551980276600" e "555180276600", e o LID nunca vira "telefone".
+ * Fixo (assinante 2–5) é mantido; internacional/desconhecido é devolvido cru.
+ */
+export const formatBrazilianNumber = (
+  input: string | null | undefined,
+): string => {
+  if (!input) return "";
+  const clean = input.replace(/\D/g, "");
+  if (!clean) return "";
+  // Só canoniza quem JÁ tem o DDI 55 (idêntico ao WB): número internacional ou
+  // sem DDI é devolvido cru — nunca carimba +55 num estrangeiro (ex.: um @c.us
+  // americano "14155551234" não pode virar "5514155551234"). Os jids do
+  // WhatsApp (@c.us / SenderAlt) sempre trazem o DDI, então o BR cai aqui.
+  if (!clean.startsWith("55")) return clean;
+  const local = clean.slice(2);
+  if (local.length < 10) return clean;
+  const ddd = local.slice(0, 2);
+  const subs = local.slice(2);
+  const fixedLine = /^[2-5]\d{7}$/; // fixo 8 díg (assinante 2–5)
+  const oldMobile = /^[6-9]\d{7}$/; // celular antigo 8 díg (6–9)
+  const newMobile = /^9\d{8}$/; // celular atual 9 díg
+  if (fixedLine.test(subs)) return clean; // fixo: mantém
+  if (newMobile.test(subs)) return clean; // já tem o 9: mantém
+  if (oldMobile.test(subs)) return `55${ddd}9${subs}`; // injeta o 9º dígito
+  return clean;
+};

@@ -179,4 +179,22 @@ export const wahaOrchestrator = {
       "GET",
       `/sessions/${sessionId}/groups/${encodeURIComponent(groupId)}/metadata`,
     ),
+
+  // Baixa a mídia de uma mensagem direto pela URL do worker (que o webhook
+  // manda em `media.url`, apontando p/ localhost do worker). Retorna base64.
+  proxyMedia: (sessionId: string, mediaUrl: string) =>
+    call<{ data: string; mimetype: string; filename: string }>(
+      "POST",
+      `/sessions/${sessionId}/proxyMedia`,
+      { mediaUrl },
+    ),
+
+  // Re-busca a mensagem no worker com downloadMedia=true e devolve o binário em
+  // base64. Fallback quando não temos a `media.url` do webhook.
+  downloadMedia: (sessionId: string, messageId: string, chatId?: string) =>
+    call<{ data: string; mimetype: string; filename?: string }>(
+      "POST",
+      `/sessions/${sessionId}/downloadMedia`,
+      { messageId, ...(chatId ? { chatId } : {}) },
+    ),
 };

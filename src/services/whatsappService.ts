@@ -197,14 +197,20 @@ const buildWebhookConfig = (
   return {
     url: `${base.replace(/\/$/, "")}/api/whatsapp/webhook/${wahaSessionId}`,
     // Mantido alinhado com os eventos TRATADOS em whatsappChatService
-    // (processWebhookEvent): mensagens, ack, reações, status da sessão e
-    // presença/typing. Subscrever só o que o handler processa.
+    // (processWebhookEvent): mensagens, ack (+grupo), reações, edição/exclusão,
+    // LID resolvido, status/remoção de sessão e presença/typing. Subscrever só o
+    // que o handler processa.
     events: [
       "message",
       "message.any",
       "message.ack",
+      "message.ack.group",
       "message.reaction",
+      "message.edited",
+      "message.revoked",
+      "lid.resolved",
       "session.status",
+      "session.deleted",
       "presence.update",
     ],
     customHeaders: [{ name: "x-webhook-secret", value: secret }],

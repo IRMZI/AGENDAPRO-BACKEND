@@ -8,8 +8,16 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { wahaOrchestrator } from "../lib/wahaOrchestrator.js";
 import { emitToCompany } from "../lib/realtime.js";
-import { normalizeDigits } from "../lib/phone.js";
+import { normalizeDigits, formatBrazilianNumber } from "../lib/phone.js";
 import { mapWahaStatus } from "./whatsappService.js";
+import {
+  computeIsGroup,
+  isNewsletterMessage,
+  isValidWahaMessage,
+  normalizeTimestamp,
+  shouldAdvanceStatus,
+} from "./whatsapp/wahaValidation.js";
+import { ingestMedia } from "./whatsapp/mediaIngest.js";
 
 // ============================================================
 // Helpers de JID/parsing WAHA
@@ -113,10 +121,12 @@ const upsertContact = async (params: {
   realPhone?: string | null;
 }) => {
   // Pra @lid, NÃO usa phoneFromJid (seria o LID): só grava telefone quando
-  // temos o número real. Pra @c.us, o próprio jid já é o telefone.
+  // temos o número real. Pra @c.us, o próprio jid já é o telefone — canoniza
+  // (DDI 55 + 9º dígito) para bater sempre com a mesma chave de identidade.
   const isLid = params.waId.endsWith("@lid");
   const phone =
-    params.realPhone || (isLid ? null : phoneFromJid(params.waId));
+    params.realPhone ||
+    (isLid ? null : formatBrazilianNumber(phoneFromJid(params.waId)) || null);
   const existing = await prisma.whatsappContact.findUnique({
     where: {
       session_id_wa_id: { session_id: params.sessionId, wa_id: params.waId },
@@ -243,6 +253,36 @@ const syncGroupInfo = async (
   });
   emitToCompany(session.company_id, "conversation:updated", {
     conversation: { id: conversation.id },
+  });
+};
+
+// Baixa a mídia recebida e guarda no storage durável, depois atualiza a
+// mensagem com a URL definitiva e emite message:updated. Fire-and-forget: roda
+// fora do caminho do webhook (não bloqueia o ACK 200).
+const ingestMediaAndUpdate = async (
+  session: { id: string; company_id: string; waha_session_id: string },
+  message: { id: string; conversation_id: string; wa_message_id: string },
+  payload: WahaMessagePayload,
+) => {
+  const ing = await ingestMedia({
+    companyId: session.company_id,
+    wahaSessionId: session.waha_session_id,
+    mediaUrl: payload.media?.url ?? null,
+    messageId: message.wa_message_id,
+    chatId: resolveChatId(payload),
+  });
+  if (!ing) return;
+  const updated = await prisma.whatsappMessage.update({
+    where: { id: message.id },
+    data: {
+      media_url: ing.url,
+      ...(ing.mimeType ? { media_mime_type: ing.mimeType } : {}),
+      updated_at: new Date(),
+    },
+  });
+  emitToCompany(session.company_id, "message:updated", {
+    conversationId: message.conversation_id,
+    message: updated,
   });
 };
 
@@ -491,9 +531,17 @@ interface WahaMessagePayload {
   type?: string;
   ack?: number;
   ackName?: string;
+  // "api" quando a msg saiu pelo nosso sistema (usado no dedup fromMe do WB).
+  source?: string;
+  isGroupMsg?: boolean;
+  // Ids da mensagem-alvo em eventos de edição/exclusão.
+  editedMessageId?: string;
+  revokedMessageId?: string;
   _data?: {
     notifyName?: string;
     quotedMessage?: any;
+    key?: { remoteJid?: string };
+    Message?: any;
     // Engine GOWS coloca o nome do contato aqui (não em notifyName) e o
     // telefone REAL por trás do @lid em SenderAlt/RecipientAlt.
     Info?: {
@@ -501,6 +549,8 @@ interface WahaMessagePayload {
       Sender?: string;
       SenderAlt?: string;
       RecipientAlt?: string;
+      IsGroup?: boolean;
+      Chat?: string;
     };
   };
   notifyName?: string;
@@ -634,14 +684,23 @@ const handleIncomingMessage = async (
     console.warn(`[whatsappChat] webhook para session desconhecida: ${wahaSessionId}`);
     return;
   }
-  if (!payload.id) return;
+  // Validações do WB: payload processável (id + não-broadcast) e não-newsletter.
+  // O `!payload.id` é redundante com isValidWahaMessage, mas estreita o tipo p/ TS.
+  if (!isValidWahaMessage(payload) || !payload.id) return;
+  if (isNewsletterMessage(payload)) return;
 
   const chatId = resolveChatId(payload);
   if (!chatId) return;
-
-  // Só ingere conversa normal (individual) e grupo. Ignora status/stories e
-  // listas de transmissão (*@broadcast) e canais/newsletters (*@newsletter).
+  // Redundante com as validações acima, mas cobre o jid JÁ resolvido
+  // (status/stories/broadcast/canais que escaparem pelo Info.Chat).
   if (chatId.endsWith("@broadcast") || chatId.endsWith("@newsletter")) return;
+
+  // Grupo por MÚLTIPLOS sinais (não só o jid): previne msg de grupo — em especial
+  // as `fromMe`, onde `payload.to` é o MEU número — vazar para uma conversa 1:1.
+  const isGroup = computeIsGroup(payload);
+  // Grupo sinalizado mas sem jid de grupo resolvível (Info.Chat ausente): não dá
+  // pra endereçar a conversa certa — descarta em vez de vazar no 1:1.
+  if (isGroup && !isGroupJid(chatId)) return;
 
   const direction = payload.fromMe
     ? MessageDirection.outbound
@@ -664,13 +723,15 @@ const handleIncomingMessage = async (
       payload._data?.Info?.PushName ??
       null);
   // Telefone real por trás do @lid: SenderAlt (inbound) / RecipientAlt (out).
-  const realPhone = payload.fromMe
+  // Canoniza (par do normalizeDigits) p/ o contato guardar sempre a mesma forma.
+  const realPhoneRaw = payload.fromMe
     ? realPhoneFromAltJid(payload._data?.Info?.RecipientAlt)
     : realPhoneFromAltJid(payload._data?.Info?.SenderAlt);
+  const realPhone = realPhoneRaw ? formatBrazilianNumber(realPhoneRaw) : null;
 
   // Grupo: chaveado pelo jid @g.us (estável). Individual: unifica pela
   // identidade (telefone) p/ não duplicar conversa entre LID/@c.us/web.
-  const { conversation, created: conversationCreated } = isGroupJid(chatId)
+  const { conversation, created: conversationCreated } = isGroup
     ? await resolveGroupConversation({
         companyId: session.company_id,
         sessionId: session.id,
@@ -684,24 +745,38 @@ const handleIncomingMessage = async (
         realPhone,
       });
 
-  const ts = payload.timestamp
-    ? new Date(payload.timestamp * 1000)
-    : new Date();
+  const ts = normalizeTimestamp(payload.timestamp);
 
-  // Idempotencia via @@unique([session_id, wa_message_id])
-  const exists = await prisma.whatsappMessage.findUnique({
-    where: {
-      session_id_wa_message_id: {
-        session_id: session.id,
-        wa_message_id: payload.id,
+  // Idempotência via @@unique([session_id, wa_message_id]). O fallback pela
+  // CONVERSA cobre reconexão: a mesma mensagem reentregue sob uma sessão NOVA
+  // (session_id diferente) tem a conversa unificada por identidade, então sem
+  // ele entraria duplicada. Só roda quando a conversa é de OUTRA sessão (o caso
+  // de reconexão) — no caminho normal (mesma sessão) o findUnique já resolve,
+  // evitando o custo por-conversa em toda mensagem. Bump de status só se AVANÇAR
+  // (ACK monotônico do WB).
+  const exists =
+    (await prisma.whatsappMessage.findUnique({
+      where: {
+        session_id_wa_message_id: {
+          session_id: session.id,
+          wa_message_id: payload.id,
+        },
       },
-    },
-  });
+    })) ??
+    (conversation.session_id !== session.id
+      ? await prisma.whatsappMessage.findFirst({
+          where: { conversation_id: conversation.id, wa_message_id: payload.id },
+        })
+      : null);
   if (exists) {
-    if (exists.status !== status) {
-      await prisma.whatsappMessage.update({
+    if (shouldAdvanceStatus(exists.status, status)) {
+      const bumped = await prisma.whatsappMessage.update({
         where: { id: exists.id },
         data: { status, updated_at: new Date() },
+      });
+      emitToCompany(session.company_id, "message:updated", {
+        conversationId: bumped.conversation_id,
+        message: bumped,
       });
     }
     return;
@@ -748,7 +823,7 @@ const handleIncomingMessage = async (
   // Em GRUPO, cada mensagem recebida tem um remetente diferente (participante).
   // Guarda nome+telefone do remetente para o front mostrar QUEM falou.
   let groupSenderPhone: string | null = null;
-  if (isGroupJid(chatId) && direction === MessageDirection.inbound) {
+  if (isGroup && direction === MessageDirection.inbound) {
     const senderName =
       payload._data?.Info?.PushName ?? payload.notifyName ?? null;
     groupSenderPhone =
@@ -791,10 +866,10 @@ const handleIncomingMessage = async (
     data: {
       last_message: payload.body?.slice(0, 200) ?? "[mídia]",
       last_message_at: ts,
+      // Recebida: +1 não-lida. Enviada (resposta): ZERA as não-lidas — quem
+      // responde já leu a conversa (paridade com o reset do WB no fromMe).
       unread_count:
-        direction === MessageDirection.inbound
-          ? { increment: 1 }
-          : conversation.unread_count,
+        direction === MessageDirection.inbound ? { increment: 1 } : 0,
       updated_at: new Date(),
     },
   });
@@ -807,13 +882,22 @@ const handleIncomingMessage = async (
     conversation: updatedConv,
   });
 
+  // Mídia: a URL do webhook aponta p/ o worker e EXPIRA. Baixa e guarda no
+  // storage durável em background (não bloqueia o webhook); ao concluir,
+  // atualiza a média_url e emite message:updated p/ a UI trocar a URL.
+  if (payload.media?.url || payload.hasMedia) {
+    void ingestMediaAndUpdate(session, created, payload).catch((err) =>
+      console.warn("[whatsappChat] media ingest falhou:", err?.message),
+    );
+  }
+
   // Saudação automática: só no PRIMEIRO contato (conversa recém-criada),
   // em mensagem recebida (não fromMe) e chat individual. Idempotente por
   // conversa (só dispara quando a conversa é criada).
   if (
     conversationCreated &&
     direction === MessageDirection.inbound &&
-    !isGroupJid(chatId)
+    !isGroup
   ) {
     const greetName =
       payload.notifyName ??
@@ -827,7 +911,7 @@ const handleIncomingMessage = async (
 
   // Nome do grupo: busca o subject no WAHA quando a conversa de grupo ainda não
   // tem o grupo vinculado (cobre grupos novos e antigos no próximo evento).
-  if (isGroupJid(chatId) && !conversation.group_id) {
+  if (isGroup && !conversation.group_id) {
     void syncGroupInfo(session, conversation).catch((err) =>
       console.warn("[whatsappChat] syncGroupInfo falhou:", err?.message),
     );
@@ -899,11 +983,17 @@ const handleAckEvent = async (
 ) => {
   const session = await resolveSessionByWahaId(wahaSessionId);
   if (!session || !payload.id || typeof payload.ack !== "number") return;
+  // ACK de newsletter/canal não corresponde a mensagem nossa (WB descarta antes
+  // de qualquer query).
+  if (isNewsletterMessage(payload)) return;
   const status = ACK_TO_STATUS[payload.ack] ?? MessageStatus.sent;
-  const before = await prisma.whatsappMessage.findFirst({
-    where: { session_id: session.id, wa_message_id: payload.id },
-  });
+  // Match EXATO escopado à sessão (indexado). Um ack de mensagem de sessão
+  // antiga (pré-reconexão) simplesmente não avança o status — aceitável e evita
+  // seq scan de tabela inteira no caminho quente do ack.
+  const before = await findMessageByWaId(session, payload.id);
   if (!before) return;
+  // ACK monotônico: nunca regride read->delivered com um ack atrasado.
+  if (!shouldAdvanceStatus(before.status, status)) return;
   const updated = await prisma.whatsappMessage.update({
     where: { id: before.id },
     data: { status, updated_at: new Date() },
@@ -998,6 +1088,168 @@ const handleSessionStatusEvent = async (
 };
 
 // ============================================================
+// Edição / exclusão / LID / sessão deletada (paridade WB)
+// ============================================================
+
+// Match EXATO da mensagem pelo wa_message_id, escopado à sessão — usa o prefixo
+// session_id do índice @@unique([session_id, wa_message_id]) (O(1), sem seq
+// scan). Usado pelo ack. NÃO faz fallback company-wide: sem índice em
+// (company_id, wa_message_id), isso viraria um scan de tabela inteira no
+// caminho quente do ack.
+const findMessageByWaId = async (
+  session: { id: string },
+  waMessageId: string,
+) =>
+  prisma.whatsappMessage.findFirst({
+    where: { session_id: session.id, wa_message_id: waMessageId },
+  });
+
+// Casa a mensagem-alvo de EDIÇÃO/EXCLUSÃO tolerando diferença de formato de id
+// entre engines: alguns mandam o id COMPLETO ("true_..._SHORT") na mensagem e o
+// id CURTO ("SHORT") no evento de edit/revoke (ou o inverso). Tenta, em ordem:
+// id exato → id curto exato → sufixo "_SHORT". Tudo escopado à sessão (barato:
+// edit/revoke são eventos raros).
+const findMutableMessage = async (
+  session: { id: string },
+  targetId: string,
+) => {
+  const exact = await findMessageByWaId(session, targetId);
+  if (exact) return exact;
+  const shortId = targetId.split("_").pop() ?? targetId;
+  if (shortId && shortId !== targetId) {
+    const byShort = await findMessageByWaId(session, shortId);
+    if (byShort) return byShort;
+  }
+  if (!shortId) return null;
+  return prisma.whatsappMessage.findFirst({
+    where: {
+      session_id: session.id,
+      wa_message_id: { endsWith: `_${shortId}` },
+    },
+    orderBy: { created_at: "desc" },
+  });
+};
+
+// message.edited: atualiza o corpo e marca como editada (raw_data._edited),
+// preservando o texto anterior. Emite message:updated.
+const handleMessageEditEvent = async (
+  wahaSessionId: string,
+  payload: WahaMessagePayload,
+) => {
+  const session = await resolveSessionByWahaId(wahaSessionId);
+  if (!session) return;
+  if (isNewsletterMessage(payload)) return;
+  const targetId =
+    payload.editedMessageId ||
+    payload._data?.Message?.protocolMessage?.key?.ID ||
+    payload.id;
+  const newBody =
+    payload.body ||
+    payload._data?.Message?.protocolMessage?.editedMessage?.conversation ||
+    payload._data?.Message?.protocolMessage?.editedMessage?.extendedTextMessage
+      ?.text ||
+    null;
+  if (!targetId || !newBody) return;
+  const target = await findMutableMessage(session, targetId);
+  if (!target) return;
+  const raw = ((target.raw_data as any) ?? {}) as Record<string, unknown>;
+  const updated = await prisma.whatsappMessage.update({
+    where: { id: target.id },
+    data: {
+      body: newBody,
+      raw_data: {
+        ...raw,
+        _edited: {
+          at: new Date().toISOString(),
+          previous: target.body ?? null,
+        },
+      },
+      updated_at: new Date(),
+    },
+  });
+  emitToCompany(session.company_id, "message:updated", {
+    conversationId: target.conversation_id,
+    message: updated,
+  });
+};
+
+// message.revoked: soft-delete (raw_data._deleted) — não apaga a linha, a UI
+// mostra "mensagem apagada". Idempotente.
+const handleMessageRevokeEvent = async (
+  wahaSessionId: string,
+  payload: WahaMessagePayload,
+) => {
+  const session = await resolveSessionByWahaId(wahaSessionId);
+  if (!session) return;
+  const targetId = payload.revokedMessageId || payload.id;
+  if (!targetId) return;
+  const target = await findMutableMessage(session, targetId);
+  if (!target) return;
+  const raw = ((target.raw_data as any) ?? {}) as Record<string, unknown>;
+  if (raw._deleted) return;
+  const updated = await prisma.whatsappMessage.update({
+    where: { id: target.id },
+    data: {
+      raw_data: {
+        ...raw,
+        _deleted: true,
+        _deletedAt: new Date().toISOString(),
+      },
+      updated_at: new Date(),
+    },
+  });
+  emitToCompany(session.company_id, "message:updated", {
+    conversationId: target.conversation_id,
+    message: updated,
+  });
+};
+
+// lid.resolved: o WhatsApp revela o telefone real por trás de um @lid. Aprende
+// o número no(s) contato(s) que estavam só com o LID — cura a ORIGEM do bug que
+// o backfillLidPhones limpa depois. Payload: { lid, phoneNumber, identifier }.
+const handleLidResolvedEvent = async (
+  wahaSessionId: string,
+  payload: { lid?: string; phoneNumber?: string; identifier?: string },
+) => {
+  const session = await resolveSessionByWahaId(wahaSessionId);
+  if (!session) return;
+  const lidLocal = (payload?.lid ?? "").replace(/\D/g, "");
+  const canonical = formatBrazilianNumber(payload?.phoneNumber);
+  if (!lidLocal || !canonical) return;
+  const contacts = await prisma.whatsappContact.findMany({
+    where: { company_id: session.company_id, wa_id: { startsWith: lidLocal } },
+  });
+  for (const c of contacts) {
+    if (c.phone === canonical) continue;
+    await prisma.whatsappContact.update({
+      where: { id: c.id },
+      data: { phone: canonical, updated_at: new Date() },
+    });
+  }
+};
+
+// session.deleted: o orchestrator removeu a sessão — marca desconectada/inativa
+// (some da UI) e avisa em tempo real.
+const handleSessionDeletedEvent = async (wahaSessionId: string) => {
+  const session = await resolveSessionByWahaId(wahaSessionId);
+  if (!session) return;
+  const updated = await prisma.whatsappSession.update({
+    where: { id: session.id },
+    data: {
+      status: WhatsappSessionStatus.disconnected,
+      is_active: false,
+      updated_at: new Date(),
+    },
+  });
+  emitToCompany(session.company_id, "session:status", {
+    sessionId: updated.id,
+    wahaSessionId,
+    status: updated.status,
+    phoneNumber: updated.phone_number,
+  });
+};
+
+// ============================================================
 // Entry point
 // ============================================================
 
@@ -1020,14 +1272,27 @@ export const processWebhookEvent = async (
       }
       break;
     case "message.ack":
+    case "message.ack.group":
       if (e.payload) await handleAckEvent(wahaSessionId, e.payload);
       break;
     case "message.reaction":
       if (e.payload) await handleReactionEvent(wahaSessionId, e.payload);
       break;
+    case "message.edited":
+      if (e.payload) await handleMessageEditEvent(wahaSessionId, e.payload);
+      break;
+    case "message.revoked":
+      if (e.payload) await handleMessageRevokeEvent(wahaSessionId, e.payload);
+      break;
+    case "lid.resolved":
+      if (e.payload) await handleLidResolvedEvent(wahaSessionId, e.payload);
+      break;
     case "session.status":
       // payload pode vir achatado ou aninhado conforme engine/versao
       await handleSessionStatusEvent(wahaSessionId, e.payload ?? e);
+      break;
+    case "session.deleted":
+      await handleSessionDeletedEvent(wahaSessionId);
       break;
     case "presence.update":
     case "presence":
