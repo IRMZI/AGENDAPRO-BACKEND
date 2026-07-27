@@ -71,6 +71,9 @@ model Company {
   max_attendants                   Int?                               @default(1)
   max_whatsapp_sessions            Int?                               @default(1)
   reminder_hours_before            Int?                               @default(24)
+  // Granularidade (min) da grade de horários sugeridos na agenda.
+  // A profissional ainda pode digitar qualquer horário manualmente.
+  slot_interval_minutes            Int                                @default(30)
   // Regra do link público: serviço SEM atendente vinculado aparece p/ todos
   // (true) ou some até ter um vínculo (false).
   show_unassigned_services         Boolean                            @default(true)
@@ -187,6 +190,10 @@ model Booking {
   service         String
   booking_date    DateTime              @db.Date
   booking_time    String
+  // Duração real deste agendamento (min). NULL = usa a duração do serviço.
+  // Permite à profissional sobrescrever quando atende mais rápido/devagar
+  // que o padrão do serviço (ex.: cílios variam por cliente).
+  duration_minutes Int?
   date_time       DateTime?
   status          BookingStatus         @default(pending)
   notes           String?

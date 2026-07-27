@@ -103,6 +103,8 @@ import {
 import {
   getCompanyBusinessHoursHandler,
   getAttendantWeekdaysHandler,
+  getSchedulingConfigHandler,
+  updateSchedulingConfigHandler,
   upsertAttendantWeekdayHandler,
   upsertCompanyBusinessHoursHandler,
 } from "../controllers/availabilityConfigController.js";
@@ -570,6 +572,20 @@ router.put(
   requireRole("admin"),
   requireCompanyAccess,
   upsertCompanyBusinessHoursHandler,
+);
+// Granularidade da grade de horários da agenda (nível empresa).
+router.get(
+  "/scheduling-config/company/:companyId",
+  ...authed,
+  requireCompanyAccess,
+  getSchedulingConfigHandler,
+);
+router.put(
+  "/scheduling-config/company/:companyId",
+  ...authed,
+  requireRole("admin"),
+  requireCompanyAccess,
+  updateSchedulingConfigHandler,
 );
 router.get(
   "/attendants/:attendantId/weekdays",

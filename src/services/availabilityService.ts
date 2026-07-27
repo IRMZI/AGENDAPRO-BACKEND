@@ -1,5 +1,13 @@
 import { prisma } from "../lib/prisma.js";
 import { assertCompanyBookable } from "./companyService.js";
+import {
+  BLOCKING_STATUSES,
+  conflictBookingSelect,
+  conflictsWithExisting,
+  DEFAULT_DURATION_MINUTES,
+  generateGrid,
+  type ExistingBooking,
+} from "./scheduleConflict.js";
 
 type AvailabilityRequest = {
   companyId: string;
@@ -110,7 +118,7 @@ export const getAvailability = async ({
     };
   }
 
-  let durationMinutes = 30;
+  let durationMinutes = DEFAULT_DURATION_MINUTES;
 
   if (serviceId) {
     const service = await prisma.service.findUnique({
@@ -127,28 +135,28 @@ export const getAvailability = async ({
     }
   }
 
+  const company = await prisma.company.findUnique({
+    where: { id: companyId },
+    select: { slot_interval_minutes: true },
+  });
+  const intervalMinutes =
+    company?.slot_interval_minutes || DEFAULT_DURATION_MINUTES;
+
   const bookings = await prisma.booking.findMany({
     where: {
       attendant_id: attendant.id,
       booking_date: new Date(date),
-      status: {
-        in: ["confirmed", "pending", "in_progress"],
-      },
+      status: { in: BLOCKING_STATUSES },
     },
-    select: {
-      booking_time: true,
-    },
+    select: conflictBookingSelect,
   });
-
-  const bookedTimes = bookings.map(
-    (b: { booking_time: string }) => b.booking_time,
-  );
 
   const hasSlots = calculateHasSlots(
     openTime,
     closeTime,
     durationMinutes,
-    bookedTimes,
+    bookings,
+    intervalMinutes,
   );
 
   return {
@@ -170,7 +178,7 @@ export const suggestAttendantsForDay = async (
   const targetDate = new Date(date);
   const weekday = targetDate.getDay();
 
-  let durationMinutes = 30;
+  let durationMinutes = DEFAULT_DURATION_MINUTES;
   if (serviceId) {
     const service = await prisma.service.findUnique({
       where: { id: serviceId },
@@ -180,6 +188,13 @@ export const suggestAttendantsForDay = async (
       durationMinutes = service.duration_minutes;
     }
   }
+
+  const company = await prisma.company.findUnique({
+    where: { id: companyId },
+    select: { slot_interval_minutes: true },
+  });
+  const intervalMinutes =
+    company?.slot_interval_minutes || DEFAULT_DURATION_MINUTES;
 
   const businessHours = await prisma.companyBusinessHours.findFirst({
     where: { company_id: companyId, weekday, is_open: true },
@@ -227,16 +242,17 @@ export const suggestAttendantsForDay = async (
       where: {
         attendant_id: attendant.id,
         booking_date: new Date(date),
-        status: { in: ["confirmed", "pending", "in_progress"] },
+        status: { in: BLOCKING_STATUSES },
       },
-      select: { booking_time: true },
+      select: conflictBookingSelect,
     });
 
     const hasSlots = calculateHasSlots(
       attendantOpen,
       attendantClose,
       durationMinutes,
-      bookings.map((b: { booking_time: string }) => b.booking_time),
+      bookings,
+      intervalMinutes,
     );
 
     availableAttendants.push({
@@ -256,39 +272,16 @@ const calculateHasSlots = (
   openTime: string,
   closeTime: string,
   durationMinutes: number,
-  bookedTimes: string[],
+  existing: ExistingBooking[],
+  intervalMinutes: number = DEFAULT_DURATION_MINUTES,
 ): boolean => {
-  const parseTime = (time: string): number => {
-    const [hours, minutes] = time.split(":").map(Number);
-    return hours * 60 + minutes;
-  };
-
-  const openMinutes = parseTime(openTime);
-  const closeMinutes = parseTime(closeTime);
-
-  const slots: number[] = [];
-  for (
-    let time = openMinutes;
-    time + durationMinutes <= closeMinutes;
-    time += 30
-  ) {
-    slots.push(time);
-  }
-
-  const bookedSlots = bookedTimes.map(parseTime);
-
-  for (const slot of slots) {
-    const slotEnd = slot + durationMinutes;
-
-    const hasConflict = bookedSlots.some((bookedSlot) => {
-      const bookedEnd = bookedSlot + durationMinutes;
-      return slot < bookedEnd && slotEnd > bookedSlot;
-    });
-
-    if (!hasConflict) {
-      return true;
-    }
-  }
-
-  return false;
+  const slots = generateGrid(
+    openTime,
+    closeTime,
+    durationMinutes,
+    intervalMinutes,
+  );
+  return slots.some(
+    (slot) => !conflictsWithExisting(slot, durationMinutes, existing),
+  );
 };

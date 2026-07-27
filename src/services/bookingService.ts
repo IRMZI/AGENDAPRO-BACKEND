@@ -9,6 +9,14 @@ import {
 } from "./bookingAutomationService.js";
 import { sendPushToUser } from "./pushService.js";
 import { BookingStatus, type PaymentMethod } from "@prisma/client";
+import {
+  BLOCKING_STATUSES,
+  conflictBookingSelect,
+  conflictsWithExisting,
+  DEFAULT_DURATION_MINUTES,
+  generateGrid,
+  parseHHMM,
+} from "./scheduleConflict.js";
 
 /**
  * Guard against cross-tenant reference injection on the public booking route:
@@ -66,6 +74,36 @@ async function assertBelongsToCompany(
   }
 }
 
+/**
+ * Resolve a duração (min) de um agendamento: override explícito (>0) → soma
+ * das durações dos serviços → duração do serviço único → padrão.
+ */
+const resolveBookingDuration = async (
+  explicit: unknown,
+  serviceIds?: string[] | null,
+  serviceId?: string | null,
+): Promise<number> => {
+  if (typeof explicit === "number" && explicit > 0) {
+    return Math.round(explicit);
+  }
+  if (Array.isArray(serviceIds) && serviceIds.length > 0) {
+    const svcs = await prisma.service.findMany({
+      where: { id: { in: serviceIds } },
+      select: { duration_minutes: true },
+    });
+    const sum = svcs.reduce((acc, s) => acc + (s.duration_minutes || 0), 0);
+    if (sum > 0) return sum;
+  }
+  if (serviceId) {
+    const svc = await prisma.service.findUnique({
+      where: { id: serviceId },
+      select: { duration_minutes: true },
+    });
+    if (svc?.duration_minutes) return svc.duration_minutes;
+  }
+  return DEFAULT_DURATION_MINUTES;
+};
+
 export const createBooking = async (booking: any) => {
   if (!booking?.company_id) {
     throw new Error("company_id is required");
@@ -90,8 +128,37 @@ export const createBooking = async (booking: any) => {
   // Extrair service_ids se existir (novo formato com múltiplos serviços)
   const { service_ids, ...bookingData } = booking;
 
+  // Duração real deste agendamento, gravada p/ o motor de conflito medir a
+  // ocupação certa depois: override explícito → soma dos serviços → serviço
+  // único → padrão.
+  const durationMinutes = await resolveBookingDuration(
+    booking.duration_minutes,
+    service_ids,
+    booking.service_id,
+  );
+
+  // Guarda anti-sobreposição: dois agendamentos ATIVOS do mesmo profissional
+  // não podem se cruzar (encostar um no outro tudo bem). Só checa quando há
+  // profissional + data + horário.
+  if (booking.attendant_id && booking.booking_date && booking.booking_time) {
+    const sameDay = await prisma.booking.findMany({
+      where: {
+        attendant_id: booking.attendant_id,
+        booking_date: new Date(booking.booking_date),
+        status: { in: BLOCKING_STATUSES },
+      },
+      select: conflictBookingSelect,
+    });
+    if (conflictsWithExisting(booking.booking_time, durationMinutes, sameDay)) {
+      throw new Error(
+        "Horário indisponível: já existe um agendamento nesse intervalo para este profissional.",
+      );
+    }
+  }
+
   const finalBookingData = {
     ...bookingData,
+    duration_minutes: durationMinutes,
     booking_date: booking.booking_date
       ? new Date(booking.booking_date)
       : new Date(),
@@ -338,13 +405,22 @@ export const getAvailableTimeSlots = async (
   totalDurationMinutes?: number, // Novo parâmetro opcional para duração total
 ) => {
   await assertCompanyBookable(companyId);
-  const service = await prisma.service.findUnique({
-    where: { id: serviceId },
-    select: { duration_minutes: true },
-  });
+  const [service, company] = await Promise.all([
+    prisma.service.findUnique({
+      where: { id: serviceId },
+      select: { duration_minutes: true },
+    }),
+    prisma.company.findUnique({
+      where: { id: companyId },
+      select: { slot_interval_minutes: true },
+    }),
+  ]);
 
   // Usar totalDurationMinutes se fornecido, senão usar duração do serviço
-  const durationMinutes = totalDurationMinutes || service?.duration_minutes || 30;
+  const durationMinutes =
+    totalDurationMinutes || service?.duration_minutes || DEFAULT_DURATION_MINUTES;
+  const intervalMinutes =
+    company?.slot_interval_minutes || DEFAULT_DURATION_MINUTES;
   const targetDate = new Date(date);
   const weekday = targetDate.getDay();
 
@@ -385,48 +461,30 @@ export const getAvailableTimeSlots = async (
     where: {
       attendant_id: attendantId,
       booking_date: new Date(date),
-      status: {
-        in: [
-          BookingStatus.confirmed,
-          BookingStatus.pending,
-          BookingStatus.in_progress,
-        ],
-      },
+      status: { in: BLOCKING_STATUSES },
     },
-    select: { booking_time: true },
+    select: conflictBookingSelect,
   });
 
-  const allSlots = generateTimeSlots(openTime, closeTime, 30);
-  const bookedTimes = bookings.map(
-    (b: { booking_time: string }) => b.booking_time,
+  const allSlots = generateGrid(
+    openTime,
+    closeTime,
+    durationMinutes,
+    intervalMinutes,
   );
 
   const today = new Date();
   const selectedDate = new Date(`${date}T00:00:00`);
   const isToday = selectedDate.toDateString() === today.toDateString();
+  const currentTimeMinutes = today.getHours() * 60 + today.getMinutes();
 
-  const now = new Date();
-  const currentTimeMinutes = now.getHours() * 60 + now.getMinutes();
-
-  const availableSlots = allSlots.filter((slot) => {
-    if (isToday) {
-      const [hours, minutes] = slot.split(":").map(Number);
-      const slotTimeMinutes = hours * 60 + minutes;
-
-      if (slotTimeMinutes <= currentTimeMinutes + 5) {
-        return false;
-      }
+  return allSlots.filter((slot) => {
+    // Corta horários que já passaram quando a data é hoje.
+    if (isToday && parseHHMM(slot) <= currentTimeMinutes + 5) {
+      return false;
     }
-
-    return !hasTimeConflict(
-      slot,
-      durationMinutes,
-      bookedTimes,
-      durationMinutes,
-    );
+    return !conflictsWithExisting(slot, durationMinutes, bookings);
   });
-
-  return availableSlots;
 };
 
 export const updateBookingStatus = async (
@@ -549,6 +607,18 @@ export const archiveBooking = async (bookingId: string) => {
 /** Edit an existing booking (client/service/attendant/date/time/notes). */
 export const updateBooking = async (bookingId: string, data: any) => {
   return prisma.$transaction(async (tx) => {
+    const existing = await tx.booking.findUnique({
+      where: { id: bookingId },
+      select: {
+        attendant_id: true,
+        booking_date: true,
+        booking_time: true,
+        duration_minutes: true,
+        service_rel: { select: { duration_minutes: true } },
+      },
+    });
+    if (!existing) throw new Error("Booking not found");
+
     const patch: Record<string, unknown> = { updated_at: new Date() };
     if (data.attendant_id !== undefined)
       patch.attendant_id = data.attendant_id || null;
@@ -563,6 +633,57 @@ export const updateBooking = async (bookingId: string, data: any) => {
       patch.booking_date = new Date(data.booking_date);
     if (data.service_id !== undefined)
       patch.service_id = data.service_id || null;
+
+    // Duração: override explícito vence; senão, se o serviço mudou, refaz o
+    // default pela duração do novo serviço; senão mantém o que já estava.
+    if (data.duration_minutes !== undefined) {
+      patch.duration_minutes =
+        typeof data.duration_minutes === "number" && data.duration_minutes > 0
+          ? Math.round(data.duration_minutes)
+          : null;
+    } else if (data.service_id) {
+      const svc = await tx.service.findUnique({
+        where: { id: data.service_id },
+        select: { duration_minutes: true },
+      });
+      if (svc?.duration_minutes) patch.duration_minutes = svc.duration_minutes;
+    }
+
+    // Guarda anti-sobreposição contra OUTROS agendamentos ativos do profissional.
+    const effAttendant =
+      data.attendant_id !== undefined
+        ? data.attendant_id || null
+        : existing.attendant_id;
+    const effDate =
+      data.booking_date !== undefined
+        ? new Date(data.booking_date)
+        : existing.booking_date;
+    const effTime =
+      data.booking_time !== undefined
+        ? data.booking_time
+        : existing.booking_time;
+    const effDuration =
+      (patch.duration_minutes as number | null | undefined) ??
+      existing.duration_minutes ??
+      existing.service_rel?.duration_minutes ??
+      DEFAULT_DURATION_MINUTES;
+
+    if (effAttendant && effDate && effTime) {
+      const others = await tx.booking.findMany({
+        where: {
+          attendant_id: effAttendant,
+          booking_date: effDate,
+          status: { in: BLOCKING_STATUSES },
+          id: { not: bookingId },
+        },
+        select: conflictBookingSelect,
+      });
+      if (conflictsWithExisting(effTime, effDuration, others)) {
+        throw new Error(
+          "Horário indisponível: já existe um agendamento nesse intervalo para este profissional.",
+        );
+      }
+    }
 
     await tx.booking.update({ where: { id: bookingId }, data: patch });
 
@@ -603,48 +724,5 @@ export const deleteBooking = async (bookingId: string) => {
   return { id: bookingId };
 };
 
-const hasTimeConflict = (
-  slotTime: string,
-  slotDuration: number,
-  bookedTimes: string[],
-  bookedDuration: number = 30,
-): boolean => {
-  const parseTime = (time: string): number => {
-    const [hours, minutes] = time.split(":").map(Number);
-    return hours * 60 + minutes;
-  };
-
-  const slotStart = parseTime(slotTime);
-  const slotEnd = slotStart + slotDuration;
-
-  return bookedTimes.some((bookedTime) => {
-    const bookedStart = parseTime(bookedTime);
-    const bookedEnd = bookedStart + bookedDuration;
-
-    return slotStart < bookedEnd && slotEnd > bookedStart;
-  });
-};
-
-const generateTimeSlots = (
-  openTime: string,
-  closeTime: string,
-  interval: number = 30,
-): string[] => {
-  const slots: string[] = [];
-  const [openHour, openMin] = openTime.split(":").map(Number);
-  const [closeHour, closeMin] = closeTime.split(":").map(Number);
-
-  let currentMinutes = openHour * 60 + openMin;
-  const closeMinutes = closeHour * 60 + closeMin;
-
-  while (currentMinutes < closeMinutes) {
-    const hours = Math.floor(currentMinutes / 60);
-    const minutes = currentMinutes % 60;
-    slots.push(
-      `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`,
-    );
-    currentMinutes += interval;
-  }
-
-  return slots;
-};
+// Motor de conflito/grade movido p/ ./scheduleConflict.ts (status-aware +
+// duração real por agendamento). Helpers locais antigos removidos.

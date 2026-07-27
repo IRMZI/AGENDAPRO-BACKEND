@@ -20,6 +20,28 @@ export const upsertCompanyBusinessHours = async (data: any) => {
   });
 };
 
+/** Config de agenda no nível da empresa (granularidade da grade de horários). */
+export const getSchedulingConfig = async (companyId: string) => {
+  const company = await prisma.company.findUnique({
+    where: { id: companyId },
+    select: { slot_interval_minutes: true },
+  });
+  return { slot_interval_minutes: company?.slot_interval_minutes ?? 30 };
+};
+
+export const updateSchedulingConfig = async (
+  companyId: string,
+  slotIntervalMinutes: number,
+) => {
+  // Clamp defensivo: 5–120 min.
+  const value = Math.min(120, Math.max(5, Math.round(slotIntervalMinutes)));
+  return prisma.company.update({
+    where: { id: companyId },
+    data: { slot_interval_minutes: value },
+    select: { slot_interval_minutes: true },
+  });
+};
+
 export const getAttendantWeekdays = async (attendantId: string) => {
   return prisma.attendantWeekday.findMany({
     where: { attendant_id: attendantId },
