@@ -529,6 +529,23 @@ model Session {
   @@map("app_fd14ee28a1_auth_sessions")
 }
 
+// Verificação de email do cadastro self-service (teste grátis): código de 6
+// dígitos guardado com hash (bcrypt) + TTL curto. DB-backed de propósito — o
+// rate-limiter é em memória por processo e a prod roda 2 réplicas, então um
+// código emitido por uma réplica precisa ser validável pela outra. Uma linha
+// por email (upsert no reenvio); queimada ao acertar (uso único).
+model EmailVerification {
+  id         String   @id @default(uuid()) @db.Uuid
+  email      String   @unique
+  code_hash  String
+  expires_at DateTime
+  attempts   Int      @default(0)
+  created_at DateTime @default(now())
+  updated_at DateTime @default(now())
+
+  @@map("app_fd14ee28a1_email_verifications")
+}
+
 model Lead {
   id                   String   @id @default(uuid()) @db.Uuid
   name                 String

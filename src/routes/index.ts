@@ -22,6 +22,8 @@ import {
   logoutHandler,
   meHandler,
   setPasswordHandler,
+  googleHandler,
+  handoffExchangeHandler,
 } from "../controllers/authController.js";
 import {
   requireAuth,
@@ -36,12 +38,15 @@ import {
   publicWriteLimiter,
   publicReadLimiter,
   trialSignupLimiter,
+  emailVerifyLimiter,
   uploadLimiter,
 } from "../middleware/rateLimit.js";
 import {
   trialResendLinkHandler,
   trialSenderConfigHandler,
   trialSignupHandler,
+  trialStartVerificationHandler,
+  trialGoogleHandler,
   trialStatusHandler,
 } from "../controllers/trialController.js";
 import {
@@ -188,10 +193,12 @@ import {
   listMessagesHandler,
   markSeenHandler,
   reactMessageHandler,
+  sendMediaHandler,
   sendMessageHandler,
   updateContactNameHandler,
   webhookHandler,
 } from "../controllers/whatsappChatController.js";
+import { isChatMediaMime } from "../services/uploadService.js";
 import {
   createTemplateHandler,
   deleteTemplateHandler,
@@ -270,6 +277,36 @@ const singleImage = (req: Request, res: Response, next: NextFunction) => {
   });
 };
 
+// Anexos do chat WhatsApp: allowlist mais ampla (imagem/PDF/doc/áudio/vídeo) e
+// cap de 16MB — limite prático do WhatsApp p/ mídia comum. Validação final de
+// mime é do uploadChatMedia (allowlist de extensão), aqui é o corte barato.
+const chatMediaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 16 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (isChatMediaMime(file.mimetype)) cb(null, true);
+    else
+      cb(
+        new Error(
+          "Formato não suportado. Envie imagem, PDF, documento, áudio ou vídeo MP4.",
+        ),
+      );
+  },
+});
+
+const singleChatMedia = (req: Request, res: Response, next: NextFunction) => {
+  chatMediaUpload.single("file")(req, res, (err: unknown) => {
+    if (err) {
+      const message =
+        (err as { code?: string }).code === "LIMIT_FILE_SIZE"
+          ? "Arquivo muito grande. O limite é 16MB."
+          : (err as Error).message || "Falha no upload do arquivo.";
+      return res.status(400).json({ error: message });
+    }
+    return next();
+  });
+};
+
 router.get("/health", healthCheck);
 
 // Authenticated image upload (owner or logged-in attendant) → { url }.
@@ -281,6 +318,12 @@ router.post("/auth/refresh", authLimiter, refreshHandler);
 router.post("/auth/logout", logoutHandler);
 // Public: attendant sets their password from a one-time invite token, then is logged in.
 router.post("/auth/set-password", authLimiter, setPasswordHandler);
+// Login via Google (usuários que voltam). Verifica o ID token server-side e
+// devolve tokens direto (mesma origem da API — sem handoff).
+router.post("/auth/google", authLimiter, googleHandler);
+// Troca o handoff (uso único vindo da landing) por sessão real → aterrissa
+// logado no app depois do cadastro do teste grátis em outro domínio.
+router.post("/auth/handoff/exchange", authLimiter, handoffExchangeHandler);
 // ISENTA: o app resolve a identidade por aqui. Bloquear = loop de login.
 router.get("/auth/me", requireAuth, meHandler);
 
@@ -326,10 +369,20 @@ router.delete(
 // Teste grátis self-service (landing page → company com 7 dias)
 // ============================================================================
 // Público: cria User + Company de verdade → limiter próprio, bem mais apertado
-// que o publicWriteLimiter. O link de acesso sai por WhatsApp (nunca na
-// resposta), o que verifica o número implicitamente.
+// que o publicWriteLimiter. Acesso é imediato agora (handoff no lugar do link
+// mágico do WhatsApp); o manual exige verificação de email por código.
+// Passo 1 do manual: manda o código de verificação no email (dedup antes).
+router.post(
+  "/trial/start-verification",
+  emailVerifyLimiter,
+  trialStartVerificationHandler,
+);
+// Passo 2 do manual: cria a company (senha real + código) → devolve handoff.
 router.post("/trial/signup", trialSignupLimiter, trialSignupHandler);
+// Cadastro/login via Google direto da landing (verificado por natureza).
+router.post("/trial/google", trialSignupLimiter, trialGoogleHandler);
 // Recuperação do link ("não chegou" / token queimado). Resposta genérica.
+// (Legado: atende trials antigos que ainda usam o link mágico.)
 router.post("/trial/resend-link", trialSignupLimiter, trialResendLinkHandler);
 // ISENTA do requireActiveCompany: alimenta a tela de "teste encerrado".
 router.get("/trial/status", requireAuth, trialStatusHandler);
@@ -903,6 +956,14 @@ router.post(
   ...authed,
   requireRole("admin"),
   sendMessageHandler,
+);
+router.post(
+  "/whatsapp/conversations/:convId/send-media",
+  ...authed,
+  requireRole("admin"),
+  uploadLimiter,
+  singleChatMedia,
+  sendMediaHandler,
 );
 router.post(
   "/whatsapp/conversations/:convId/seen",

@@ -11,9 +11,11 @@ import {
   markConversationSeen,
   processWebhookEvent,
   reactToMessage,
+  sendConversationMedia,
   sendConversationMessage,
   updateConversationContactName,
 } from "../services/whatsappChatService.js";
+import { uploadChatMedia } from "../services/uploadService.js";
 import { requireCompanyForUser } from "../services/whatsappService.js";
 
 const handleError = (res: Response, error: any) => {
@@ -120,6 +122,48 @@ export const sendMessageHandler = async (
       company.id,
       body.trim(),
       replyTo,
+    );
+    return res.status(201).json({ data: message });
+  } catch (error: any) {
+    return handleError(res, error);
+  }
+};
+
+// Multipart: file (obrigatório) + caption/replyTo/asVoice (opcionais).
+// Sobe o arquivo pro storage (URL pública) e envia via WAHA.
+export const sendMediaHandler = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    const file = (req as Request & { file?: Express.Multer.File }).file;
+    if (!file) {
+      return res.status(400).json({ error: "file is required" });
+    }
+    const { caption, replyTo, asVoice } = (req.body ?? {}) as {
+      caption?: string;
+      replyTo?: string;
+      asVoice?: string;
+    };
+    const company = await requireCompanyForUser(uid(req));
+    const stored = await uploadChatMedia(
+      {
+        buffer: file.buffer,
+        mimetype: file.mimetype,
+        size: file.size,
+        originalname: file.originalname,
+      },
+      company.id,
+    );
+    const message = await sendConversationMedia(
+      req.params.convId,
+      company.id,
+      stored,
+      {
+        caption,
+        replyTo,
+        asVoice: asVoice === "true" || asVoice === "1",
+      },
     );
     return res.status(201).json({ data: message });
   } catch (error: any) {

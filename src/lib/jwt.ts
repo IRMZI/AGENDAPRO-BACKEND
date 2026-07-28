@@ -51,3 +51,29 @@ export const verifyAccessToken = (token: string) => {
 export const verifyRefreshToken = (token: string) => {
   return jwt.verify(token, refreshSecret) as RefreshTokenPayload;
 };
+
+// ── Handoff token (login cross-domain: landing → app) ────────────────────────
+// Curtíssimo (90s) e de uso único: a Session correspondente nasce com
+// refresh_token_hash vazio e só é "reivindicada" uma vez, no exchange. Reusa o
+// segredo do refresh + uma claim `purpose` p/ nunca ser aceito como refresh.
+export type HandoffTokenPayload = {
+  sub: string;
+  sessionId: string;
+  purpose: "handoff";
+};
+
+export const signHandoffToken = (payload: {
+  sub: string;
+  sessionId: string;
+}) =>
+  jwt.sign({ ...payload, purpose: "handoff" }, refreshSecret, {
+    expiresIn: "90s",
+  });
+
+export const verifyHandoffToken = (token: string): HandoffTokenPayload => {
+  const decoded = jwt.verify(token, refreshSecret) as HandoffTokenPayload;
+  if (decoded.purpose !== "handoff") {
+    throw new Error("Invalid handoff token");
+  }
+  return decoded;
+};

@@ -1400,6 +1400,13 @@ export const listConversations = async (
           select: { id: true, name: true, profile_pic_url: true },
         },
         session: { select: { id: true, name: true, phone_number: true } },
+        // Última mensagem (1 por conversa, lateral join): alimenta o preview
+        // rico da lista — prefixo "Você:", ícone de tipo de mídia e ticks.
+        messages: {
+          orderBy: { timestamp: "desc" },
+          take: 1,
+          select: { direction: true, media_type: true, status: true },
+        },
       },
       take: 100,
     }),
@@ -1418,7 +1425,15 @@ export const listConversations = async (
         ? (clientMap.get(phoneKey) ?? null)
         : null;
     const linkedClient = explicit ?? phoneMatch;
-    return { ...row, linkedClient };
+    const last = row.messages[0] ?? null;
+    const { messages: _messages, ...rest } = row;
+    return {
+      ...rest,
+      linkedClient,
+      last_message_direction: last?.direction ?? null,
+      last_message_media_type: last?.media_type ?? null,
+      last_message_status: last?.status ?? null,
+    };
   });
 };
 
@@ -1838,6 +1853,122 @@ export const sendConversationMessage = async (
     where: { id: conv.id },
     data: {
       last_message: body.slice(0, 200),
+      last_message_at: now,
+      updated_at: now,
+    },
+  });
+
+  emitToCompany(companyId, "message:new", {
+    conversationId: conv.id,
+    message,
+  });
+  emitToCompany(companyId, "conversation:updated", {
+    conversation: updatedConv,
+  });
+
+  return message;
+};
+
+// Envia MÍDIA para uma conversa (anexo do composer). Espelha
+// sendConversationMessage: resolve sessão viva, envia-antes-de-persistir,
+// placeholder `local-*` reconciliado pelo eco do webhook. O arquivo já está no
+// storage (URL pública) — o worker WAHA baixa por ela.
+export const sendConversationMedia = async (
+  convId: string,
+  companyId: string,
+  media: { url: string; mimetype: string; filename: string },
+  opts: { caption?: string; replyTo?: string; asVoice?: boolean } = {},
+) => {
+  const conv = await requireConversation(convId, companyId);
+  const sendSession = await resolveSendSession(conv, companyId);
+  const file = {
+    url: media.url,
+    mimetype: media.mimetype,
+    filename: media.filename,
+  };
+  const caption = opts.caption?.trim() || undefined;
+
+  // Canal por mime (padrão WB): imagem/vídeo têm envio próprio (aparecem como
+  // foto/vídeo no WhatsApp); áudio gravado tenta nota de voz; resto = documento.
+  const base = media.mimetype;
+  let mediaType: string;
+  if (opts.asVoice && base.startsWith("audio/")) {
+    mediaType = "ptt";
+    try {
+      await wahaOrchestrator.sendVoice(
+        sendSession.waha_session_id,
+        conv.wa_chat_id,
+        file,
+        opts.replyTo,
+      );
+    } catch (err: any) {
+      // Engine rejeitou o formato do browser (webm/opus) como nota de voz —
+      // entrega como arquivo de áudio comum em vez de falhar o envio.
+      console.warn(
+        `[whatsappChat] sendVoice falhou (${err?.message}); fallback sendFile`,
+      );
+      mediaType = "audio";
+      await wahaOrchestrator.sendFile(
+        sendSession.waha_session_id,
+        conv.wa_chat_id,
+        file,
+        caption,
+        opts.replyTo,
+      );
+    }
+  } else if (/^image\/(jpeg|png|webp)$/.test(base)) {
+    mediaType = "image";
+    await wahaOrchestrator.sendImage(
+      sendSession.waha_session_id,
+      conv.wa_chat_id,
+      file,
+      caption,
+      opts.replyTo,
+    );
+  } else if (base === "video/mp4") {
+    mediaType = "video";
+    await wahaOrchestrator.sendVideo(
+      sendSession.waha_session_id,
+      conv.wa_chat_id,
+      file,
+      caption,
+      opts.replyTo,
+    );
+  } else {
+    mediaType = base.startsWith("audio/") ? "audio" : "document";
+    await wahaOrchestrator.sendFile(
+      sendSession.waha_session_id,
+      conv.wa_chat_id,
+      file,
+      caption,
+      opts.replyTo,
+    );
+  }
+
+  const now = new Date();
+  const message = await prisma.whatsappMessage.create({
+    data: {
+      id: randomUUID(),
+      company_id: companyId,
+      session_id: sendSession.id,
+      conversation_id: conv.id,
+      wa_message_id: `local-${randomUUID()}`,
+      direction: MessageDirection.outbound,
+      status: MessageStatus.pending,
+      to_number: phoneFromJid(conv.wa_chat_id),
+      body: caption ?? null,
+      media_type: mediaType,
+      media_url: media.url,
+      media_mime_type: media.mimetype,
+      timestamp: now,
+      raw_data: { _outboundMedia: { filename: media.filename } },
+    },
+  });
+
+  const updatedConv = await prisma.whatsappConversation.update({
+    where: { id: conv.id },
+    data: {
+      last_message: (caption ?? "[mídia]").slice(0, 200),
       last_message_at: now,
       updated_at: now,
     },

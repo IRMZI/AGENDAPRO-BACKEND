@@ -7,6 +7,13 @@ import { createCompanyTx } from "./companyService.js";
 import { sendAutomatedMessageToPhone } from "./whatsappChatService.js";
 import { sendEmail } from "./emailService.js";
 import { getBrandName } from "./tenantService.js";
+import { issueHandoffForUser } from "./authService.js";
+import { verifyGoogleCredential } from "./googleAuthService.js";
+import {
+  assertEmailVerified,
+  consumeEmailVerification,
+  startEmailVerification,
+} from "./emailVerificationService.js";
 
 // ============================================================================
 // Cadastro self-service do teste grátis (landing page → company com 7 dias)
@@ -46,6 +53,9 @@ export type TrialSignupInput = {
   auth_provider?: string;
   tenant_slug?: string;
   utm?: Record<string, string>;
+  password?: string;
+  email_code?: string;
+  google_credential?: string;
 };
 
 const emailKeyOf = (email: string) => email.trim().toLowerCase();
@@ -201,12 +211,153 @@ export const deliverSetupLink = async (opts: {
   }
 };
 
-/** Cadastro do teste grátis. Lança TrialError (409/400) em caso de recusa. */
+// ── Helpers compartilhados (cadastro manual + Google) ───────────────────────
+
+const buildEntrarUrl = (appUrl: string | null | undefined, code: string) => {
+  const base = (appUrl || process.env.FRONTEND_URL || "http://localhost:5173")
+    .replace(/\/$/, "");
+  return `${base}/entrar?code=${encodeURIComponent(code)}`;
+};
+
+type LeadInfo = {
+  name: string;
+  email: string;
+  whatsapp: string;
+  segment?: string;
+  business_name: string;
+  team_size?: string;
+  instagram?: string;
+  auth_provider: string;
+  tenant_slug: string;
+  utm?: Record<string, string>;
+  max_attendants: number;
+};
+
+// Lead SEMPRE, inclusive quando o cadastro é recusado — "tentou de novo" é sinal
+// de marketing e o Lead não tem constraint que possa falhar.
+const recordTrialLead = (info: LeadInfo, outcome: string) =>
+  prisma.lead
+    .create({
+      data: {
+        name: info.name,
+        email: info.email,
+        phone: info.whatsapp,
+        business_type: info.segment || "não informado",
+        attendants_count: info.max_attendants,
+        source_message: JSON.stringify({
+          outcome,
+          business_name: info.business_name,
+          team_size: info.team_size ?? null,
+          instagram: info.instagram ?? null,
+          auth_provider: info.auth_provider,
+          tenant: info.tenant_slug,
+          utm: info.utm ?? {},
+        }).slice(0, 4000),
+      },
+    })
+    .catch((err) => console.error("[trial] falha ao gravar lead:", err?.message));
+
+/**
+ * Dedup em 2 partes: SELECT semântico (pega quem já tem conta, inclusive as do
+ * fluxo manual/pre-onboarding sem signup_*_key) + scan de telefone das empresas
+ * antigas (phone é texto livre, não casa no banco). A CORRIDA (duplo submit) é
+ * pega pelo índice único no create (P2002). Email case-insensitive nos 2 lados.
+ */
+const findTrialDuplicate = async (emailKey: string, phoneKey: string) => {
+  const [existingUser, existingCompany] = await Promise.all([
+    prisma.user.findFirst({
+      where: { email: { equals: emailKey, mode: "insensitive" } },
+      select: { id: true },
+    }),
+    prisma.company.findFirst({
+      where: {
+        OR: [
+          { signup_email_key: emailKey },
+          { signup_phone_key: phoneKey },
+          { email: { equals: emailKey, mode: "insensitive" } },
+        ],
+      },
+      select: { id: true },
+    }),
+  ]);
+  if (existingUser || existingCompany) return true;
+
+  const withPhone = await prisma.company.findMany({
+    where: { signup_phone_key: null, NOT: { phone: "" } },
+    select: { id: true, phone: true },
+  });
+  return withPhone.some((c) => normalizeDigits(c.phone) === phoneKey);
+};
+
+/** Pré-voo público: barra email/telefone já usado ANTES de mandar o código. */
+export const assertTrialIdentityAvailable = async (
+  email: string,
+  whatsapp: string,
+) => {
+  if (await findTrialDuplicate(emailKeyOf(email), normalizeDigits(whatsapp))) {
+    throw new TrialError(ALREADY_USED_MSG, 409, "TRIAL_ALREADY_USED");
+  }
+};
+
+/**
+ * Núcleo de criação do teste (User + Company numa transação). Acesso é imediato
+ * agora — sem setup_token/link mágico. `passwordHash` é a senha real (manual) ou
+ * uma inutilizável (Google, que loga pelo próprio Google). P2002 na corrida.
+ */
+const createTrialAccount = async (opts: {
+  tenant: TenantLite;
+  email: string;
+  emailKey: string;
+  whatsapp: string;
+  phoneKey: string;
+  businessName: string;
+  segment?: string;
+  teamSize?: string;
+  passwordHash: string;
+}) => {
+  const now = new Date();
+  const trialEndsAt = new Date(now.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+  const { company_size, max_attendants } = teamSizeToCompany(opts.teamSize);
+
+  const company = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: { email: opts.emailKey, password_hash: opts.passwordHash },
+    });
+    return createCompanyTx(tx, {
+      user_id: user.id,
+      tenant_id: opts.tenant.id,
+      name: opts.businessName,
+      company_nickname: opts.businessName,
+      email: opts.email,
+      phone: opts.whatsapp,
+      business_type: opts.segment || null,
+      company_size,
+      max_attendants,
+      subscription_status: "trialing",
+      trial_started_at: now,
+      trial_ends_at: trialEndsAt,
+      signup_source: "landing_trial",
+      signup_email_key: opts.emailKey,
+      signup_phone_key: opts.phoneKey,
+      // Marca o novo fluxo de acesso imediato (antes: whatsapp/email/failed).
+      signup_link_delivery: "instant",
+    });
+  });
+  return { company, trialEndsAt };
+};
+
+/**
+ * Cadastro manual (email + senha). Exige verificação de email por código
+ * (assertEmailVerified) e devolve um handoff que loga a pessoa no app. Lança
+ * TrialError / EmailVerificationError em caso de recusa.
+ */
 export const signupTrial = async (input: TrialSignupInput) => {
   const name = (input.name || "").trim();
   const email = (input.email || "").trim();
   const whatsapp = (input.whatsapp || "").trim();
   const businessName = (input.business_name || "").trim();
+  const password = input.password || "";
+  const emailCode = (input.email_code || "").trim();
 
   if (name.length < 2) throw new TrialError("Informe seu nome.", 400, "INVALID_NAME");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))
@@ -219,146 +370,221 @@ export const signupTrial = async (input: TrialSignupInput) => {
     );
   if (businessName.length < 2)
     throw new TrialError("Informe o nome do seu negócio.", 400, "INVALID_BUSINESS");
+  if (password.length < 6)
+    throw new TrialError(
+      "A senha deve ter pelo menos 6 caracteres.",
+      400,
+      "INVALID_PASSWORD",
+    );
+  if (!emailCode)
+    throw new TrialError(
+      "Informe o código enviado ao seu e-mail.",
+      400,
+      "MISSING_CODE",
+    );
 
   const tenant = await resolveTenant(input.tenant_slug);
   if (!tenant) throw new TrialError("Origem inválida.", 400, "INVALID_TENANT");
 
   const emailKey = emailKeyOf(email);
   const phoneKey = normalizeDigits(whatsapp);
-  const { company_size, max_attendants } = teamSizeToCompany(input.team_size);
+  const lead: LeadInfo = {
+    name,
+    email,
+    whatsapp,
+    segment: input.segment,
+    business_name: businessName,
+    team_size: input.team_size,
+    instagram: input.instagram,
+    auth_provider: input.auth_provider || "manual",
+    tenant_slug: tenant.slug ?? input.tenant_slug ?? "mbc",
+    utm: input.utm,
+    max_attendants: teamSizeToCompany(input.team_size).max_attendants,
+  };
 
-  // Lead SEMPRE, inclusive quando o cadastro é recusado — "tentou de novo" é
-  // sinal de marketing e o Lead não tem constraint que possa falhar.
-  const recordLead = (outcome: string) =>
-    prisma.lead
-      .create({
-        data: {
-          name,
-          email,
-          phone: whatsapp,
-          business_type: input.segment || "não informado",
-          attendants_count: max_attendants,
-          source_message: JSON.stringify({
-            outcome,
-            business_name: businessName,
-            team_size: input.team_size ?? null,
-            instagram: input.instagram ?? null,
-            auth_provider: input.auth_provider ?? null,
-            tenant: tenant.slug ?? input.tenant_slug ?? "mbc",
-            utm: input.utm ?? {},
-          }).slice(0, 4000),
-        },
-      })
-      .catch((err) => console.error("[trial] falha ao gravar lead:", err?.message));
+  // Prova de posse do email. Lança EmailVerificationError (mapeada no controller).
+  await assertEmailVerified(email, emailCode);
 
-  // Camada 1 (semântica): pega quem JÁ tem conta — inclusive as criadas pelo
-  // fluxo manual/pre-onboarding, que não têm signup_*_key preenchida.
-  // Email comparado case-insensitive nos dois lados: User.email é @unique mas o
-  // cadastro antigo gravava como digitado, então findUnique(lowercase) erraria.
-  const [existingUser, existingCompany] = await Promise.all([
-    prisma.user.findFirst({
-      where: { email: { equals: email, mode: "insensitive" } },
-      select: { id: true },
-    }),
-    prisma.company.findFirst({
-      where: {
-        OR: [
-          { signup_email_key: emailKey },
-          { signup_phone_key: phoneKey },
-          { email: { equals: email, mode: "insensitive" } },
-        ],
-      },
-      select: { id: true },
-    }),
-  ]);
-  if (existingUser || existingCompany) {
-    await recordLead("rejected_duplicate");
+  if (await findTrialDuplicate(emailKey, phoneKey)) {
+    await recordTrialLead(lead, "rejected_duplicate");
     throw new TrialError(ALREADY_USED_MSG, 409, "TRIAL_ALREADY_USED");
   }
 
-  // Telefone das empresas ANTIGAS: `phone` é texto livre (o cadastro manual
-  // grava "(51) 98027-6600"), então não dá pra casar no banco — normaliza em
-  // memória. A base de empresas é pequena (dezenas); se crescer, popular
-  // signup_phone_key no cadastro manual também e cair fora deste scan.
-  const withPhone = await prisma.company.findMany({
-    where: { signup_phone_key: null, NOT: { phone: "" } },
-    select: { id: true, phone: true },
-  });
-  if (withPhone.some((c) => normalizeDigits(c.phone) === phoneKey)) {
-    await recordLead("rejected_duplicate_phone");
-    throw new TrialError(ALREADY_USED_MSG, 409, "TRIAL_ALREADY_USED");
-  }
-
-  const now = new Date();
-  const trialEndsAt = new Date(now.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
-  const token = randomBytes(32).toString("hex");
-
-  let company: { id: string };
+  const passwordHash = await bcrypt.hash(password, 10);
+  let created: Awaited<ReturnType<typeof createTrialAccount>>;
   try {
-    company = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          email: emailKey,
-          // Senha inutilizável: o acesso é pelo link mágico (setup_token).
-          password_hash: await bcrypt.hash(randomUUID(), 10),
-          setup_token: token,
-          // TTL casado com o fim do teste: um token que morre no dia 3 enquanto
-          // o teste queima até o dia 7 só gera chamado de suporte.
-          setup_token_expires_at: trialEndsAt,
-        },
-      });
-
-      return createCompanyTx(tx, {
-        user_id: user.id,
-        tenant_id: tenant.id,
-        name: businessName,
-        company_nickname: businessName,
-        email,
-        phone: whatsapp,
-        business_type: input.segment || null,
-        company_size,
-        max_attendants,
-        subscription_status: "trialing",
-        trial_started_at: now,
-        trial_ends_at: trialEndsAt,
-        signup_source: "landing_trial",
-        signup_email_key: emailKey,
-        signup_phone_key: phoneKey,
-      });
+    created = await createTrialAccount({
+      tenant,
+      email,
+      emailKey,
+      whatsapp,
+      phoneKey,
+      businessName,
+      segment: input.segment,
+      teamSize: input.team_size,
+      passwordHash,
     });
   } catch (err: any) {
-    // Camada 2 (corrida): dois submits simultâneos — o índice único decide.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-      await recordLead("rejected_duplicate_race");
+      await recordTrialLead(lead, "rejected_duplicate_race");
       throw new TrialError(ALREADY_USED_MSG, 409, "TRIAL_ALREADY_USED");
     }
     throw err;
   }
 
-  await recordLead("created");
+  await recordTrialLead(lead, "created");
+  // Best-effort: limpa a linha de verificação (o dedup já protege reuso).
+  await consumeEmailVerification(email);
 
-  // Pós-commit: a entrega NUNCA desfaz o cadastro. Se falhar, o teste existe,
-  // o dedup vale, e o link se recupera por /trial/resend-link ou pelo scheduler.
-  const delivery = await deliverSetupLink({
-    tenant,
-    companyId: company.id,
-    ownerName: name,
-    email,
-    phone: whatsapp,
-    token,
-    category: "trial_welcome",
-  });
-
-  await prisma.company.update({
-    where: { id: company.id },
-    data: { signup_link_delivery: delivery, updated_at: new Date() },
-  });
-
+  const handoffCode = await issueHandoffForUser(created.company.user_id);
   return {
-    company_id: company.id,
-    trial_ends_at: trialEndsAt,
-    delivery,
+    company_id: created.company.id,
+    trial_ends_at: created.trialEndsAt,
+    handoff_code: handoffCode,
+    redirect_url: buildEntrarUrl(tenant.app_url, handoffCode),
   };
+};
+
+/**
+ * Cadastro/login via Google. Verifica o ID token server-side. Email já tem conta
+ * → loga direto (handoff), sem pedir o funil de novo. Conta nova mas sem
+ * negócio/whatsapp ainda → { needs_profile } para o funil seguir (nada é criado).
+ * Com os dados → cria o teste e devolve handoff. Google é verificado por
+ * natureza, então NÃO passa por código de email.
+ */
+export const signupTrialWithGoogle = async (input: TrialSignupInput) => {
+  const identity = await verifyGoogleCredential(input.google_credential || "");
+  if (!identity.emailVerified) {
+    throw new TrialError(
+      "Sua conta Google está sem e-mail verificado.",
+      400,
+      "GOOGLE_EMAIL_UNVERIFIED",
+    );
+  }
+
+  const tenant = await resolveTenant(input.tenant_slug);
+  if (!tenant) throw new TrialError("Origem inválida.", 400, "INVALID_TENANT");
+
+  const email = identity.email;
+  const emailKey = emailKeyOf(email);
+  const name = (input.name || identity.name || "").trim();
+  const whatsapp = (input.whatsapp || "").trim();
+  const businessName = (input.business_name || "").trim();
+
+  // Usuário que volta: loga direto.
+  const existingUser = await prisma.user.findFirst({
+    where: { email: { equals: emailKey, mode: "insensitive" } },
+    select: { id: true },
+  });
+  if (existingUser) {
+    const handoffCode = await issueHandoffForUser(existingUser.id);
+    return {
+      returning: true,
+      company_id: null,
+      trial_ends_at: null,
+      handoff_code: handoffCode,
+      redirect_url: buildEntrarUrl(tenant.app_url, handoffCode),
+    };
+  }
+
+  // Conta nova, mas o funil ainda não coletou negócio/whatsapp: sinaliza p/ o
+  // front prefilar nome/email e seguir. Nada é criado ainda.
+  if (businessName.length < 2 || !whatsapp) {
+    return {
+      needs_profile: true as const,
+      prefill: { name: identity.name || "", email },
+    };
+  }
+
+  if (!isValidBrMobile(whatsapp))
+    throw new TrialError(
+      "Informe um celular válido com DDD (com WhatsApp ativo).",
+      400,
+      "INVALID_PHONE",
+    );
+
+  const phoneKey = normalizeDigits(whatsapp);
+  const lead: LeadInfo = {
+    name,
+    email,
+    whatsapp,
+    segment: input.segment,
+    business_name: businessName,
+    team_size: input.team_size,
+    instagram: input.instagram,
+    auth_provider: "google",
+    tenant_slug: tenant.slug ?? input.tenant_slug ?? "mbc",
+    utm: input.utm,
+    max_attendants: teamSizeToCompany(input.team_size).max_attendants,
+  };
+
+  if (await findTrialDuplicate(emailKey, phoneKey)) {
+    await recordTrialLead(lead, "rejected_duplicate");
+    throw new TrialError(ALREADY_USED_MSG, 409, "TRIAL_ALREADY_USED");
+  }
+
+  // Google-user: senha inutilizável (login futuro é pelo próprio Google).
+  const passwordHash = await bcrypt.hash(randomUUID(), 10);
+  let created: Awaited<ReturnType<typeof createTrialAccount>>;
+  try {
+    created = await createTrialAccount({
+      tenant,
+      email,
+      emailKey,
+      whatsapp,
+      phoneKey,
+      businessName,
+      segment: input.segment,
+      teamSize: input.team_size,
+      passwordHash,
+    });
+  } catch (err: any) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      await recordTrialLead(lead, "rejected_duplicate_race");
+      throw new TrialError(ALREADY_USED_MSG, 409, "TRIAL_ALREADY_USED");
+    }
+    throw err;
+  }
+
+  await recordTrialLead(lead, "created");
+  const handoffCode = await issueHandoffForUser(created.company.user_id);
+  return {
+    returning: false,
+    company_id: created.company.id,
+    trial_ends_at: created.trialEndsAt,
+    handoff_code: handoffCode,
+    redirect_url: buildEntrarUrl(tenant.app_url, handoffCode),
+  };
+};
+
+/**
+ * Passo 1 do cadastro manual: valida disponibilidade (dedup) e manda o código
+ * de verificação no email. Falha ANTES de gastar um código se o email/telefone
+ * já usou o teste.
+ */
+export const startTrialVerification = async (input: {
+  email?: string;
+  whatsapp?: string;
+  tenant_slug?: string;
+}) => {
+  const email = (input.email || "").trim();
+  const whatsapp = (input.whatsapp || "").trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))
+    throw new TrialError("E-mail inválido.", 400, "INVALID_EMAIL");
+  if (!isValidBrMobile(whatsapp))
+    throw new TrialError(
+      "Informe um celular válido com DDD (com WhatsApp ativo).",
+      400,
+      "INVALID_PHONE",
+    );
+
+  const tenant = await resolveTenant(input.tenant_slug);
+  if (!tenant) throw new TrialError("Origem inválida.", 400, "INVALID_TENANT");
+
+  await assertTrialIdentityAvailable(email, whatsapp);
+
+  const brand = await getBrandName(tenant.id);
+  await startEmailVerification(email, brand);
 };
 
 /**

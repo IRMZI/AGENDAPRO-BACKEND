@@ -77,6 +77,14 @@ export interface WahaWebhookConfig {
   customHeaders?: { name: string; value: string }[];
 }
 
+// Arquivo de mídia p/ envio: o worker baixa pela URL pública OU recebe base64.
+export interface MediaFilePayload {
+  url?: string;
+  data?: string;
+  mimetype: string;
+  filename?: string;
+}
+
 export const wahaOrchestrator = {
   createSession: (
     sessionId: string,
@@ -117,6 +125,64 @@ export const wahaOrchestrator = {
     call<unknown>("POST", `/sessions/${sessionId}/sendText`, {
       chatId,
       text,
+      ...(replyTo ? { reply_to: replyTo } : {}),
+    }),
+
+  // Envio de mídia. O worker baixa o arquivo pela URL pública (storage) —
+  // mesmo shape do WB: { chatId, file: { url|data, mimetype, filename } }.
+  sendImage: (
+    sessionId: string,
+    chatId: string,
+    file: MediaFilePayload,
+    caption?: string,
+    replyTo?: string,
+  ) =>
+    call<unknown>("POST", `/sessions/${sessionId}/sendImage`, {
+      chatId,
+      file,
+      ...(caption ? { caption } : {}),
+      ...(replyTo ? { reply_to: replyTo } : {}),
+    }),
+
+  sendVideo: (
+    sessionId: string,
+    chatId: string,
+    file: MediaFilePayload,
+    caption?: string,
+    replyTo?: string,
+  ) =>
+    call<unknown>("POST", `/sessions/${sessionId}/sendVideo`, {
+      chatId,
+      file,
+      ...(caption ? { caption } : {}),
+      ...(replyTo ? { reply_to: replyTo } : {}),
+    }),
+
+  sendFile: (
+    sessionId: string,
+    chatId: string,
+    file: MediaFilePayload,
+    caption?: string,
+    replyTo?: string,
+  ) =>
+    call<unknown>("POST", `/sessions/${sessionId}/sendFile`, {
+      chatId,
+      file,
+      ...(caption ? { caption } : {}),
+      ...(replyTo ? { reply_to: replyTo } : {}),
+    }),
+
+  // Nota de voz (PTT). O WAHA espera idealmente ogg/opus — o caller trata
+  // fallback p/ sendFile se o engine rejeitar o formato gravado no browser.
+  sendVoice: (
+    sessionId: string,
+    chatId: string,
+    file: MediaFilePayload,
+    replyTo?: string,
+  ) =>
+    call<unknown>("POST", `/sessions/${sessionId}/sendVoice`, {
+      chatId,
+      file,
       ...(replyTo ? { reply_to: replyTo } : {}),
     }),
 

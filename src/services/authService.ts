@@ -4,8 +4,11 @@ import {
   signAccessToken,
   signRefreshToken,
   verifyRefreshToken,
+  signHandoffToken,
+  verifyHandoffToken,
 } from "../lib/jwt.js";
 import { resolveUserContext } from "./authContextService.js";
+import { verifyGoogleCredential } from "./googleAuthService.js";
 
 const parseDurationToMs = (value: string): number => {
   const match = value.match(/^(\d+)([smhd])$/i);
@@ -210,7 +213,7 @@ export const refreshSession = async (refreshToken: string) => {
 };
 
 /** Emite sessão + tokens para um usuário já autenticado por outro meio. */
-const issueSessionForUser = async (
+export const issueSessionForUser = async (
   userId: string,
   userAgent?: string,
   ipAddress?: string,
@@ -252,6 +255,120 @@ const issueSessionForUser = async (
     accessToken,
     refreshToken,
   };
+};
+
+/**
+ * Cria uma Session "pendente" (refresh_token_hash vazio) e devolve um handoff
+ * token curto que aterrissa a pessoa logada no app. O hash vazio é o marcador
+ * de uso único: só o exchange (uma vez) o preenche. Usado pelo cadastro do
+ * teste grátis na landing, que é outro domínio e não consegue gravar a sessão
+ * no localStorage do app.
+ */
+export const issueHandoffForUser = async (
+  userId: string,
+  userAgent?: string,
+  ipAddress?: string,
+): Promise<string> => {
+  const session = await prisma.session.create({
+    data: {
+      user_id: userId,
+      refresh_token_hash: "",
+      user_agent: userAgent,
+      ip_address: ipAddress,
+      expires_at: buildSessionExpiry(),
+    },
+  });
+  return signHandoffToken({ sub: userId, sessionId: session.id });
+};
+
+/**
+ * Troca o handoff token por uma sessão real (access + refresh). Uso único
+ * garantido por update atômico: só "reivindica" a sessão se o refresh_token_hash
+ * ainda estiver vazio (mesmo optimistic-lock do updateBookingStatus). Segunda
+ * troca acha o hash preenchido → falha. O refresh token nunca andou na URL.
+ */
+export const exchangeHandoff = async (code: string) => {
+  const payload = verifyHandoffToken(code);
+
+  const session = await prisma.session.findUnique({
+    where: { id: payload.sessionId },
+  });
+  if (!session || session.user_id !== payload.sub) {
+    throw new Error("Handoff inválido");
+  }
+  if (session.revoked_at || session.expires_at < new Date()) {
+    throw new Error("Handoff expirado");
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+  if (!user) {
+    throw new Error("Usuário não encontrado");
+  }
+
+  const refreshToken = signRefreshToken({
+    sub: user.id,
+    sessionId: session.id,
+  });
+  const refreshHash = await bcrypt.hash(refreshToken, 10);
+
+  const claimed = await prisma.session.updateMany({
+    where: { id: session.id, refresh_token_hash: "" },
+    data: { refresh_token_hash: refreshHash, updated_at: new Date() },
+  });
+  if (claimed.count !== 1) {
+    throw new Error("Handoff já utilizado");
+  }
+
+  const context = await resolveUserContext(user.id);
+  const accessToken = signAccessToken({
+    sub: user.id,
+    email: user.email,
+    ...context,
+  });
+
+  return {
+    user: { id: user.id, email: user.email, ...context },
+    accessToken,
+    refreshToken,
+  };
+};
+
+/**
+ * Login via Google para usuários que VOLTAM (tela de login do app). Verifica o
+ * ID token server-side e loga se o email já tem conta. NÃO cria conta aqui — o
+ * cadastro (com dados do negócio + escolha de teste) mora no fluxo da landing.
+ * Sem conta → erro com code GOOGLE_NO_ACCOUNT para o app mandar pra landing.
+ */
+export const googleLoginExisting = async (
+  credential: string,
+  userAgent?: string,
+  ipAddress?: string,
+) => {
+  const identity = await verifyGoogleCredential(credential);
+  // Exige e-mail verificado ANTES de casar por e-mail: sem isso, um token do
+  // Google com email_verified=false (conta Google criada com e-mail externo não
+  // confirmado) logaria na conta da vítima. Mesma regra do fluxo do trial.
+  if (!identity.emailVerified) {
+    const err = new Error(
+      "Sua conta Google está sem e-mail verificado.",
+    ) as Error & { code?: string; status?: number };
+    err.code = "GOOGLE_EMAIL_UNVERIFIED";
+    err.status = 401;
+    throw err;
+  }
+  const user = await prisma.user.findFirst({
+    where: { email: { equals: identity.email, mode: "insensitive" } },
+    select: { id: true },
+  });
+  if (!user) {
+    const err = new Error(
+      "Não encontramos uma conta com este Google. Crie seu teste grátis primeiro.",
+    ) as Error & { code?: string; status?: number };
+    err.code = "GOOGLE_NO_ACCOUNT";
+    err.status = 404;
+    throw err;
+  }
+  return issueSessionForUser(user.id, userAgent, ipAddress);
 };
 
 /**

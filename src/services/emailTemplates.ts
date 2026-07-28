@@ -30,6 +30,11 @@ export const buildEmailContent = (
         html: generateAttendantInviteHTML(data),
         text: generateAttendantInviteText(data),
       };
+    case "email_verification_code":
+      return {
+        html: generateEmailVerificationCodeHTML(data),
+        text: generateEmailVerificationCodeText(data),
+      };
     default:
       throw new Error("Unknown email type");
   }
@@ -93,6 +98,65 @@ Se você não esperava este convite, pode ignorar este email.
 
 ---
 Este é um email automático do sistema ${data.brand_name || "My Beauty Calendar"}.
+  `;
+}
+
+function generateEmailVerificationCodeHTML(data: EmailData) {
+  const brand = data.brand_name || "My Beauty Calendar";
+  const minutes = data.minutes || 10;
+  const code = String(data.code ?? "");
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Seu código de verificação</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #F3A6B8, #E38CA4); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+            .content { background: #f8fafc; padding: 30px; border-radius: 0 0 8px 8px; text-align: center; }
+            .code { font-size: 40px; font-weight: bold; letter-spacing: 10px; color: #1e293b; background: #fff; border: 2px dashed #F3A6B8; border-radius: 12px; padding: 20px; margin: 24px 0; display: inline-block; }
+            .muted { color: #64748b; font-size: 14px; }
+            .footer { text-align: center; margin-top: 30px; color: #64748b; font-size: 13px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>✨ Confirme seu e-mail</h1>
+                <p>Falta pouco para começar seu teste grátis</p>
+            </div>
+            <div class="content">
+                <p>Use o código abaixo para confirmar seu e-mail e ativar seus dias de teste:</p>
+                <div class="code">${code}</div>
+                <p class="muted">O código expira em ${minutes} minutos. Se você não pediu este código, pode ignorar este e-mail.</p>
+            </div>
+            <div class="footer">
+                <p>Este é um email automático do sistema ${brand}.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+  `;
+}
+
+function generateEmailVerificationCodeText(data: EmailData) {
+  const brand = data.brand_name || "My Beauty Calendar";
+  const minutes = data.minutes || 10;
+  const code = String(data.code ?? "");
+  return `
+CONFIRME SEU E-MAIL
+
+Use o código abaixo para confirmar seu e-mail e ativar seu teste grátis:
+
+    ${code}
+
+O código expira em ${minutes} minutos. Se você não pediu este código, pode ignorar este e-mail.
+
+---
+Este é um email automático do sistema ${brand}.
   `;
 }
 

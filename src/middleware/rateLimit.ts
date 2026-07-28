@@ -82,6 +82,15 @@ export const trialSignupLimiter = rateLimit({
     "Muitas tentativas de cadastro. Aguarde alguns minutos e tente novamente.",
 });
 
+// Verificação de email do teste grátis (manda/checa código de 6 dígitos). Mais
+// frouxo que o trialSignup — a pessoa pode errar o código e pedir reenvio — mas
+// ainda apertado p/ não virar canal de spam de email nem oráculo de enumeração.
+export const emailVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  message: "Muitas tentativas. Aguarde alguns minutos e tente novamente.",
+});
+
 // Image uploads are authed but still capped so a compromised token can't spam
 // the bucket. Generous enough for editing a profile + a batch of services.
 export const uploadLimiter = rateLimit({
