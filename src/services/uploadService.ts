@@ -78,8 +78,9 @@ export interface ChatMediaUpload {
 
 /**
  * Guarda um anexo do chat no storage e devolve URL pública + metadados que o
- * worker WAHA usa pra baixar e enviar. Chave em whatsapp-media/{companyId}/out-*
- * (mesma pasta da mídia recebida, prefixo "out-" para diferenciar).
+ * worker WAHA usa pra baixar e enviar. Chave OBRIGATORIAMENTE sob `uploads/`:
+ * o bucket de produção só tem leitura pública nesse prefixo — fora dele o
+ * worker (e o navegador) tomam 403 ao baixar a mídia.
  */
 export const uploadChatMedia = async (
   file: UploadedFile & { originalname?: string },
@@ -95,7 +96,7 @@ export const uploadChatMedia = async (
       "Formato não suportado. Envie imagem, PDF, documento, áudio ou vídeo MP4.",
     );
   }
-  const key = `whatsapp-media/${companyId}/out-${randomUUID()}.${ext}`;
+  const key = `uploads/whatsapp/${companyId}/out-${randomUUID()}.${ext}`;
   const url = await uploadBuffer(key, file.buffer, base);
   // Nome exibido no WhatsApp (documentos): usa o original quando existir.
   const filename =

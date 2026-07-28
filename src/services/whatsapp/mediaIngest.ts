@@ -84,7 +84,9 @@ export const ingestMedia = async (params: {
   const buf = Buffer.from(b64, "base64");
   if (!buf.length) return null;
 
-  const key = `whatsapp-media/${params.companyId}/${randomUUID()}${extFor(mime, filename)}`;
+  // Sob `uploads/`: é o único prefixo com leitura pública no bucket de
+  // produção — fora dele a URL devolve 403 (navegador e worker WAHA).
+  const key = `uploads/whatsapp/${params.companyId}/in-${randomUUID()}${extFor(mime, filename)}`;
   const url = await uploadBuffer(key, buf, mime || "application/octet-stream");
   return { url, mimeType: mime, filename };
 };
