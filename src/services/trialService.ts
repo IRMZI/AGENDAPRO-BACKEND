@@ -9,11 +9,8 @@ import { sendEmail } from "./emailService.js";
 import { getBrandName } from "./tenantService.js";
 import { issueHandoffForUser } from "./authService.js";
 import { verifyGoogleCredential } from "./googleAuthService.js";
-import {
-  assertEmailVerified,
-  consumeEmailVerification,
-  startEmailVerification,
-} from "./emailVerificationService.js";
+import { startEmailVerification } from "./emailVerificationService.js";
+import { notifyContactApi } from "./contactApiService.js";
 
 // ============================================================================
 // Cadastro self-service do teste grátis (landing page → company com 7 dias)
@@ -357,7 +354,6 @@ export const signupTrial = async (input: TrialSignupInput) => {
   const whatsapp = (input.whatsapp || "").trim();
   const businessName = (input.business_name || "").trim();
   const password = input.password || "";
-  const emailCode = (input.email_code || "").trim();
 
   if (name.length < 2) throw new TrialError("Informe seu nome.", 400, "INVALID_NAME");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))
@@ -375,12 +371,6 @@ export const signupTrial = async (input: TrialSignupInput) => {
       "A senha deve ter pelo menos 6 caracteres.",
       400,
       "INVALID_PASSWORD",
-    );
-  if (!emailCode)
-    throw new TrialError(
-      "Informe o código enviado ao seu e-mail.",
-      400,
-      "MISSING_CODE",
     );
 
   const tenant = await resolveTenant(input.tenant_slug);
@@ -401,9 +391,6 @@ export const signupTrial = async (input: TrialSignupInput) => {
     utm: input.utm,
     max_attendants: teamSizeToCompany(input.team_size).max_attendants,
   };
-
-  // Prova de posse do email. Lança EmailVerificationError (mapeada no controller).
-  await assertEmailVerified(email, emailCode);
 
   if (await findTrialDuplicate(emailKey, phoneKey)) {
     await recordTrialLead(lead, "rejected_duplicate");
@@ -433,8 +420,17 @@ export const signupTrial = async (input: TrialSignupInput) => {
   }
 
   await recordTrialLead(lead, "created");
-  // Best-effort: limpa a linha de verificação (o dedup já protege reuso).
-  await consumeEmailVerification(email);
+  // Fire-and-forget: avisa o contact-api externo com os dados do lead. Não
+  // bloqueia nem derruba o cadastro (trata erro internamente).
+  void notifyContactApi({
+    name,
+    whatsapp,
+    email,
+    business_name: businessName,
+    segment: input.segment,
+    team_size: input.team_size,
+    instagram: input.instagram,
+  });
 
   const handoffCode = await issueHandoffForUser(created.company.user_id);
   return {
@@ -547,6 +543,16 @@ export const signupTrialWithGoogle = async (input: TrialSignupInput) => {
   }
 
   await recordTrialLead(lead, "created");
+  void notifyContactApi({
+    name,
+    whatsapp,
+    email,
+    business_name: businessName,
+    segment: input.segment,
+    team_size: input.team_size,
+    instagram: input.instagram,
+  });
+
   const handoffCode = await issueHandoffForUser(created.company.user_id);
   return {
     returning: false,
